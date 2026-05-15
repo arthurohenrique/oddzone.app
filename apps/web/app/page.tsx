@@ -4,53 +4,32 @@ const extensionDownloadPath =
 
 export default function HomePage() {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center",
-        padding: "24px"
-      }}
-    >
-      <section
-        style={{
-          width: "100%",
-          maxWidth: "720px",
-          background: "#171a21",
-          border: "1px solid #2a303d",
-          borderRadius: "12px",
-          padding: "24px"
-        }}
-      >
-        <h1 style={{ marginTop: 0 }}>Oddzone</h1>
-        <p>
-          Estrutura inicial em Next.js pronta para evoluir e integrar dados do
-          banco.
-        </p>
+    <main className="home">
+      <section className="home-card">
+        <span className="home-kicker">Oddzone</span>
+        <h1 className="home-title">Baixe a extensão e comece em segundos.</h1>
 
-        <a
-          href={extensionDownloadPath}
-          download
-          style={{
-            display: "inline-block",
-            padding: "10px 16px",
-            borderRadius: "8px",
-            background: "#2e8bff",
-            color: "#fff",
-            fontWeight: 700,
-            textDecoration: "none"
-          }}
-        >
-          Baixar extensao do navegador (.zip)
-        </a>
+        <div className="home-actions">
+          <a href={extensionDownloadPath} download className="apple-button">
+            Baixar extensão (.zip)
+          </a>
+        </div>
 
-        <ol style={{ marginTop: "20px", lineHeight: 1.6 }}>
-          <li>Baixe o arquivo zip da extensao.</li>
-          <li>Extraia o zip em uma pasta local.</li>
-          <li>Abra a pagina de extensoes do navegador.</li>
-          <li>Ative o Modo do desenvolvedor.</li>
-          <li>Use "Carregar sem compactacao".</li>
-        </ol>
+        <details className="home-guide">
+          <summary className="home-guide-summary">
+            <span className="home-guide-icon" aria-hidden>
+              i
+            </span>
+            Ver passo a passo
+          </summary>
+          <ol className="home-steps">
+            <li>Baixe o arquivo ZIP da extensão.</li>
+            <li>Extraia o ZIP em uma pasta local.</li>
+            <li>Abra a página de extensões do navegador.</li>
+            <li>Ative o Modo do desenvolvedor.</li>
+            <li>Use "Carregar sem compactação".</li>
+          </ol>
+        </details>
       </section>
     </main>
   );

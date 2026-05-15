@@ -6,6 +6,21 @@ Estrutura inicial com:
 - `apps/extension`: extensao de navegador com WXT.
 - `supabase/migrations`: SQL inicial de tabela + RLS.
 
+## Regra de estilo do layout web
+
+No `apps/web`, manter sempre o padrão visual **clean com estética Apple**:
+
+- fundo escuro com alto contraste e poucos elementos;
+- tipografia limpa com hierarquia simples;
+- cards discretos (glass/surface) com bordas suaves;
+- botões arredondados no estilo `pill`;
+- textos curtos e foco em ação principal.
+
+Base técnica desse padrão:
+
+- classe global `theme-apple-clean` em `apps/web/app/layout.tsx`;
+- tokens e utilitários em `apps/web/app/globals.css`.
+
 ## 1) Configuracao de ambiente
 
 1. Copie `.env.example` para `.env.local` na raiz.
