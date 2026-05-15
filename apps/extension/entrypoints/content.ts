@@ -6,6 +6,13 @@ async function sendToBackground<T>(message: unknown): Promise<T> {
   return chrome.runtime.sendMessage(message) as Promise<T>;
 }
 
+async function sendAndAssert(message: unknown): Promise<void> {
+  const response = await sendToBackground<{ ok: boolean; error?: string }>(message);
+  if (!response?.ok) {
+    throw new Error(response?.error ?? "Background recusou a mensagem");
+  }
+}
+
 function renderConsentCard(onAccept: () => Promise<void>) {
   const card = document.createElement("div");
   card.id = "oddzone-consent-card";
@@ -48,6 +55,11 @@ async function getConsent(): Promise<ConsentState> {
   const response = await sendToBackground<{ ok: boolean; consent: ConsentState }>({
     type: "collector:get-consent"
   });
+
+  if (!response.ok) {
+    throw new Error("Falha ao consultar consentimento");
+  }
+
   return response.consent;
 }
 
@@ -57,7 +69,144 @@ export default defineContentScript({
     const hostname = window.location.hostname.toLowerCase();
     if (!isBetBrDomain(hostname)) return;
 
-    const sourceUrl = window.location.href;
+    let currentUrl = window.location.href;
+    let isCollectorStarted = false;
+    let isSnapshotInFlight = false;
+    let lastSnapshotSignature: string | null = null;
+    let lastSnapshotAt = 0;
+    let lastFailureAt = 0;
+    let mutationDebounce: number | null = null;
+    let locationTimer: number | null = null;
+
+    const failureCooldownMs = 12_000;
+    const snapshotCooldownMs = 1_200;
+
+    const buildSnapshotSignature = (snapshot: ReturnType<typeof collectSnapshotFromPage>): string => {
+      return JSON.stringify({
+        pageUrl: snapshot.pageUrl,
+        providerSlug: snapshot.providerSlug,
+        odds: snapshot.odds
+          .slice(0, 40)
+          .map((odd) => [odd.selection, odd.oddValue, odd.market, odd.eventName]),
+        bets: snapshot.bets.length,
+        profile: snapshot.accountProfile?.username ?? null
+      });
+    };
+
+    const reportFailure = async (code: string, message: string): Promise<void> => {
+      const now = Date.now();
+      if (now - lastFailureAt < failureCooldownMs) return;
+      lastFailureAt = now;
+
+      try {
+        await sendToBackground({
+          type: "collector:failure",
+          sourceUrl: currentUrl,
+          siteDomain: hostname,
+          code,
+          message
+        });
+      } catch (error) {
+        console.error("[oddzone] Falha ao reportar erro para background", error);
+      }
+    };
+
+    const sendPageSeen = async (): Promise<void> => {
+      await sendAndAssert({
+        type: "collector:page-seen",
+        sourceUrl: currentUrl,
+        siteDomain: hostname,
+        pageTitle: document.title
+      });
+    };
+
+    const sendSnapshot = async (reason: string, force = false): Promise<void> => {
+      if (isSnapshotInFlight) return;
+
+      const now = Date.now();
+      if (!force && now - lastSnapshotAt < snapshotCooldownMs) return;
+
+      const snapshot = collectSnapshotFromPage(document, window.location);
+      const signature = buildSnapshotSignature(snapshot);
+      if (!force && signature === lastSnapshotSignature) return;
+
+      isSnapshotInFlight = true;
+      try {
+        await sendAndAssert({
+          type: "collector:snapshot",
+          sourceUrl: currentUrl,
+          siteDomain: hostname,
+          snapshot: {
+            ...snapshot,
+            rawPayload: {
+              ...snapshot.rawPayload,
+              captureReason: reason
+            }
+          }
+        });
+        lastSnapshotSignature = signature;
+        lastSnapshotAt = now;
+      } finally {
+        isSnapshotInFlight = false;
+      }
+    };
+
+    const scheduleSnapshot = (reason: string) => {
+      if (mutationDebounce !== null) {
+        window.clearTimeout(mutationDebounce);
+      }
+
+      mutationDebounce = window.setTimeout(() => {
+        mutationDebounce = null;
+        void sendSnapshot(reason).catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : "Falha desconhecida";
+          console.error("[oddzone] Falha ao enviar snapshot", detail);
+          void reportFailure("SNAPSHOT_SEND_FAILURE", detail);
+        });
+      }, 1200);
+    };
+
+    const startLiveCollector = () => {
+      if (isCollectorStarted) return;
+      isCollectorStarted = true;
+
+      const observer = new MutationObserver(() => {
+        scheduleSnapshot("dom_mutation");
+      });
+
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true
+      });
+
+      locationTimer = window.setInterval(() => {
+        const href = window.location.href;
+        if (href === currentUrl) return;
+
+        currentUrl = href;
+        lastSnapshotSignature = null;
+        void sendPageSeen()
+          .then(() => sendSnapshot("url_change", true))
+          .catch((error: unknown) => {
+            const detail = error instanceof Error ? error.message : "Falha ao processar mudanca de URL";
+            console.error("[oddzone] Falha em evento de mudanca de URL", detail);
+            void reportFailure("URL_CHANGE_FAILURE", detail);
+          });
+      }, 1500);
+
+      window.addEventListener("beforeunload", () => {
+        observer.disconnect();
+        if (mutationDebounce !== null) {
+          window.clearTimeout(mutationDebounce);
+          mutationDebounce = null;
+        }
+        if (locationTimer !== null) {
+          window.clearInterval(locationTimer);
+          locationTimer = null;
+        }
+      });
+    };
 
     const run = async () => {
       try {
@@ -68,9 +217,9 @@ export default defineContentScript({
             const accepted = window.confirm(TERMS_TEXT);
             if (!accepted) return;
 
-            await sendToBackground({
+            await sendAndAssert({
               type: "collector:accept-consent",
-              sourceUrl,
+              sourceUrl: currentUrl,
               siteDomain: hostname
             });
 
@@ -80,28 +229,14 @@ export default defineContentScript({
           return;
         }
 
-        await sendToBackground({
-          type: "collector:page-seen",
-          sourceUrl,
-          siteDomain: hostname,
-          pageTitle: document.title
-        });
-
-        const snapshot = collectSnapshotFromPage(document, window.location);
-        await sendToBackground({
-          type: "collector:snapshot",
-          sourceUrl,
-          siteDomain: hostname,
-          snapshot
-        });
+        removeConsentCard();
+        await sendPageSeen();
+        await sendSnapshot("initial_load", true);
+        startLiveCollector();
       } catch (error) {
-        await sendToBackground({
-          type: "collector:failure",
-          sourceUrl,
-          siteDomain: hostname,
-          code: "CONTENT_SCRIPT_FAILURE",
-          message: error instanceof Error ? error.message : "Falha na coleta"
-        });
+        const detail = error instanceof Error ? error.message : "Falha na coleta";
+        console.error("[oddzone] Falha no content script", detail);
+        await reportFailure("CONTENT_SCRIPT_FAILURE", detail);
       }
     };
 

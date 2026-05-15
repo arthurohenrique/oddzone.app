@@ -49,11 +49,19 @@ type ExtensionMessage =
 
 export default defineBackground(() => {
   chrome.runtime.onStartup.addListener(async () => {
-    await sendLifecycle("startup");
+    try {
+      await sendLifecycle("startup");
+    } catch (error) {
+      console.error("[oddzone] Falha ao enviar lifecycle startup", error);
+    }
   });
 
   chrome.runtime.onInstalled.addListener(async () => {
-    await sendLifecycle("install");
+    try {
+      await sendLifecycle("install");
+    } catch (error) {
+      console.error("[oddzone] Falha ao enviar lifecycle install", error);
+    }
   });
 
   chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
@@ -122,6 +130,17 @@ export default defineBackground(() => {
         sendResponse({ ok: true });
       }
     })().catch((error: unknown) => {
+      const payload = message && typeof message === "object" ? message : null;
+      const messageType =
+        payload && "type" in payload && typeof payload.type === "string"
+          ? payload.type
+          : "unknown";
+
+      console.error("[oddzone] Falha no background", {
+        messageType,
+        error: error instanceof Error ? error.message : "Erro inesperado"
+      });
+
       sendResponse({
         ok: false,
         error: error instanceof Error ? error.message : "Erro inesperado"

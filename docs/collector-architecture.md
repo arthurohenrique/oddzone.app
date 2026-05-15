@@ -7,9 +7,10 @@ O coletor foi desenhado em camadas para separar captura, transporte e persistên
 1. **Content script (WXT)** detecta domínio `.bet.br`.
 2. **Gate de consentimento** bloqueia coleta até aceite.
 3. **Adaptadores** extraem snapshot inicial (conta, bets, odds).
-4. **Background** empacota evento e envia para API de ingestão.
-5. **API Next.js** valida payload e persiste no Supabase com chave de servidor.
-6. **Postgres + pg_cron** aplica retenção de odds (`TTL = 1h`).
+4. **Content script** continua observando mudanças de DOM/URL para coletar snapshots adicionais em páginas SPA.
+5. **Background** empacota evento e envia para API de ingestão.
+6. **API Next.js** valida payload e persiste no Supabase com chave de servidor.
+7. **Postgres + pg_cron** aplica retenção de odds (`TTL = 1h`).
 
 ## Componentes por arquivo
 
@@ -19,6 +20,7 @@ O coletor foi desenhado em camadas para separar captura, transporte e persistên
   - valida domínio `.bet.br`
   - exibe prompt de consentimento
   - envia `page_seen` e `snapshot`
+  - observa mutações de DOM e mudanças de URL para nova coleta
 - `apps/extension/entrypoints/background.ts`
   - recebe mensagens
   - normaliza payload
@@ -28,7 +30,7 @@ O coletor foi desenhado em camadas para separar captura, transporte e persistên
 - `apps/extension/lib/collector-consent.ts`
   - persistência do aceite e `installation_id`
 - `apps/extension/lib/provider-adapters.ts`
-  - parser heurístico inicial por DOM
+  - parser heurístico com fallback genérico e seletores por provedor
 - `apps/extension/lib/collector-api.ts`
   - cliente HTTP de ingestão
 - `apps/extension/lib/collector-types.ts`
@@ -82,6 +84,13 @@ Limitação conhecida:
 
 - o token da extensão é embarcado no build e deve ser tratado como controle de atrito, não como autenticação forte.
 - para hardening futuro: assinatura por dispositivo + rotação de credencial curta + rate limit por instalação.
+
+Checklist operacional mínimo:
+
+1. Confirmar que `POST /api/collector/ingest` retorna `200` no service worker.
+2. Confirmar URL/token alinhados entre web e extensão.
+3. Confirmar `snapshot.odds` preenchido no payload em páginas com odds visíveis.
+4. Confirmar inserts em `collector_installations`, `site_sessions` e `odds_snapshots`.
 
 ## Estratégia de evolução dos adaptadores
 

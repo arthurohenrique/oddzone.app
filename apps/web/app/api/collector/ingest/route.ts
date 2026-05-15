@@ -218,6 +218,12 @@ async function insertSnapshot(
     );
 
     if (oddsError) throw oddsError;
+  } else {
+    console.warn("[collector_ingest] snapshot sem odds", {
+      installationId: body.installationId,
+      siteDomain: body.siteDomain ?? "unknown.bet.br",
+      sourceUrl: body.sourceUrl ?? null
+    });
   }
 }
 
@@ -238,22 +244,38 @@ async function insertFailure(
 }
 
 export async function POST(request: Request) {
+  let parsedBody: IngestBody | null = null;
+
   try {
     const supabaseServer = getSupabaseServerClient();
     const expectedToken = process.env.COLLECTOR_EXTENSION_SHARED_TOKEN;
     const incomingToken = request.headers.get("x-collector-token");
 
     if (expectedToken && incomingToken !== expectedToken) {
+      console.warn("[collector_ingest] token inválido", {
+        source: request.headers.get("x-collector-source"),
+        hasIncomingToken: Boolean(incomingToken)
+      });
       return NextResponse.json({ error: "Nao autorizado" }, { status: 401 });
     }
 
     const collectorSource = request.headers.get("x-collector-source");
     if (collectorSource !== "oddzone-extension") {
+      console.warn("[collector_ingest] origem inválida", {
+        collectorSource
+      });
       return NextResponse.json({ error: "Origem invalida" }, { status: 400 });
     }
 
     const body = (await request.json()) as IngestBody;
+    parsedBody = body;
     assertBody(body);
+
+    console.info("[collector_ingest] evento recebido", {
+      eventType: body.eventType,
+      installationId: body.installationId,
+      siteDomain: body.siteDomain ?? "unknown.bet.br"
+    });
 
     await upsertInstallation(
       supabaseServer,
@@ -276,6 +298,13 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
+    console.error("[collector_ingest] erro durante ingestão", {
+      eventType: parsedBody?.eventType ?? "unknown",
+      installationId: parsedBody?.installationId ?? "unknown",
+      siteDomain: parsedBody?.siteDomain ?? "unknown.bet.br",
+      error: error instanceof Error ? error.message : "Erro interno"
+    });
+
     return NextResponse.json(
       {
         ok: false,

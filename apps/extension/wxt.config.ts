@@ -9,7 +9,9 @@ export default defineConfig({
     version: "0.1.0",
     permissions: ["storage"],
     host_permissions: [
+      "http://127.0.0.1:3000/*",
       "http://localhost:3000/*",
+      "https://oddzone.vercel.app/*",
       "https://*.oddzone.app/*",
       "https://*.bet.br/*"
     ],

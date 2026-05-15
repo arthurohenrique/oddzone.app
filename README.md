@@ -30,7 +30,7 @@ Base técnica:
    - `SUPABASE_SECRET_KEY` (somente servidor)
    - `COLLECTOR_EXTENSION_SHARED_TOKEN` (servidor)
    - `WXT_PUBLIC_COLLECTOR_SHARED_TOKEN` (extensão)
-   - `WXT_PUBLIC_COLLECTOR_INGEST_URL`
+   - `WXT_PUBLIC_COLLECTOR_INGEST_URL` (opcional, default de build: `https://oddzone.vercel.app/api/collector/ingest`)
    - `WXT_PUBLIC_TERMS_VERSION`
 
 ## Instalar dependências
@@ -69,6 +69,25 @@ Fluxo de uso:
 6. Acessar domínio `.bet.br`.
 7. Aceitar termo no prompt da extensão.
 8. Extensão inicia envio de eventos e snapshots.
+
+## Troubleshooting rápido (ingestão de odds)
+
+Se as odds não estiverem chegando no banco, valide nesta ordem:
+
+1. **Service worker da extensão (Network)**
+   - request `POST /api/collector/ingest` precisa retornar `200`.
+   - se aparecer `ERR_CONNECTION_REFUSED`, a URL de ingestão está indisponível.
+2. **URL de ingestão no build da extensão**
+   - produção usa por padrão: `https://oddzone.vercel.app/api/collector/ingest`.
+   - ambiente local: definir `WXT_PUBLIC_COLLECTOR_INGEST_URL=http://localhost:3000/api/collector/ingest`.
+3. **Token compartilhado**
+   - `COLLECTOR_EXTENSION_SHARED_TOKEN` (web) deve ser igual ao `WXT_PUBLIC_COLLECTOR_SHARED_TOKEN` (extensão).
+4. **Sequência de tabelas no Supabase**
+   - conferir `collector_installations` -> `site_sessions` -> `odds_snapshots`.
+5. **Snapshots sem odds**
+   - se `snapshot.odds` vier vazio no payload, não haverá insert em `odds_snapshots`.
+6. **TTL de odds**
+   - `odds_snapshots` expira em 1 hora e é limpo pelo `pg_cron` a cada 5 minutos.
 
 ## Atualização do arquivo da extensão
 

@@ -20,6 +20,10 @@ export async function postCollectorPayload(
   });
 
   if (!response.ok) {
-    throw new Error(`Falha no envio para ingestão (${response.status})`);
+    const responseBody = await response.text().catch(() => "");
+    const details = responseBody ? ` body=${responseBody.slice(0, 220)}` : "";
+    throw new Error(
+      `Falha no envio para ingestao status=${response.status} url=${ingestUrl}${details}`
+    );
   }
 }
