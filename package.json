@@ -1,0 +1,18 @@
+{
+  "name": "oddzone-app",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web",
+    "apps/extension"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace @oddzone/web",
+    "dev:extension": "npm run dev --workspace @oddzone/extension",
+    "build:web": "npm run build --workspace @oddzone/web",
+    "build:extension": "npm run build --workspace @oddzone/extension",
+    "zip:extension": "npm run zip --workspace @oddzone/extension",
+    "sync:extension-zip": "node scripts/sync-extension-zip.mjs",
+    "release:extension": "npm run zip:extension && npm run sync:extension-zip"
+  }
+}

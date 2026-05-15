@@ -1,0 +1,8 @@
+node_modules
+.next
+.wxt
+dist
+build
+.env
+.env.local
+.env.*.local
