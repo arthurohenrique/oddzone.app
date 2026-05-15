@@ -3,7 +3,12 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Oddzone",
-  description: "Base inicial web + extensao"
+  description: "Base inicial web + extensão",
+  icons: {
+    icon: "/logo-favicon.svg",
+    shortcut: "/logo-favicon.svg",
+    apple: "/logo-favicon.svg"
+  }
 };
 
 export default function RootLayout({
@@ -13,7 +18,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="pt-BR">
-      <body className="theme-apple-clean">{children}</body>
+      <body suppressHydrationWarning className="theme-apple-clean">
+        {children}
+      </body>
     </html>
   );
 }

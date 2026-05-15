@@ -15,6 +15,14 @@ export default function HomePage() {
           </a>
         </div>
 
+        <p style={{ marginTop: "14px", color: "#a1a1aa", fontSize: "13px" }}>
+          Ao usar a extensão, leia e aceite o{" "}
+          <a href="/termos-extensao" style={{ textDecoration: "underline" }}>
+            termo de coleta
+          </a>
+          .
+        </p>
+
         <details className="home-guide">
           <summary className="home-guide-summary">
             <span className="home-guide-icon" aria-hidden>

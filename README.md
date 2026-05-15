@@ -1,45 +1,45 @@
 # oddzone.app
 
-Estrutura inicial com:
+Base monorepo para:
 
-- `apps/web`: aplicativo Next.js (App Router).
-- `apps/extension`: extensao de navegador com WXT.
-- `supabase/migrations`: SQL inicial de tabela + RLS.
+- `apps/web`: aplicativo Next.js (App Router), com landing, termo e API de ingestão.
+- `apps/extension`: extensão WXT com consentimento, detecção `.bet.br` e coleta inicial.
+- `supabase/migrations`: migrações SQL para modelo de dados e retenção.
+- `docs`: documentação de continuidade para futuras agentes IA.
 
-## Regra de estilo do layout web
+## Regra visual global do web
 
-No `apps/web`, manter sempre o padrão visual **clean com estética Apple**:
+No `apps/web`, manter padrão **clean com estética Apple**:
 
-- fundo escuro com alto contraste e poucos elementos;
-- tipografia limpa com hierarquia simples;
-- cards discretos (glass/surface) com bordas suaves;
-- botões arredondados no estilo `pill`;
-- textos curtos e foco em ação principal.
+- fundo escuro com poucos elementos;
+- tipografia limpa e hierarquia clara;
+- superfície discreta com borda suave;
+- botões `pill` e foco em ação principal.
 
-Base técnica desse padrão:
+Base técnica:
 
 - classe global `theme-apple-clean` em `apps/web/app/layout.tsx`;
-- tokens e utilitários em `apps/web/app/globals.css`.
+- tokens/utilitários em `apps/web/app/globals.css`.
 
-## 1) Configuracao de ambiente
+## Configuração de ambiente
 
-1. Copie `.env.example` para `.env.local` na raiz.
-2. Preencha com suas chaves do Supabase:
+1. Copie `.env.example` para `.env`.
+2. Preencha as variáveis obrigatórias:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-   - `SUPABASE_SECRET_KEY` (somente servidor, nunca no cliente)
-3. Para a extensao, preencha:
-   - `WXT_PUBLIC_SUPABASE_URL`
-   - `WXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-   - `WXT_PUBLIC_EXTENSION_LATEST_URL` (por padrao aponta para `http://localhost:3000/api/extension/latest`)
+   - `SUPABASE_SECRET_KEY` (somente servidor)
+   - `COLLECTOR_EXTENSION_SHARED_TOKEN` (servidor)
+   - `WXT_PUBLIC_COLLECTOR_SHARED_TOKEN` (extensão)
+   - `WXT_PUBLIC_COLLECTOR_INGEST_URL`
+   - `WXT_PUBLIC_TERMS_VERSION`
 
-## 2) Instalar dependencias
+## Instalar dependências
 
 ```bash
 npm install
 ```
 
-## 3) Rodar localmente
+## Rodar localmente
 
 Web (Next.js):
 
@@ -53,29 +53,32 @@ Extensao (WXT):
 npm run dev:extension
 ```
 
-## 4) Download da extensao no site
+## Fluxo da extensão
 
-A home do web expõe um botao para baixar:
+- Download no web: `apps/web/public/downloads/oddzone-extension.zip`
+- Termo no web: `GET /termos-extensao`
+- Ingestão no web: `POST /api/collector/ingest`
 
-- `apps/web/public/downloads/oddzone-extension.zip`
-
-O fluxo atual e manual (Modo do desenvolvedor no navegador):
+Fluxo de uso:
 
 1. Baixar o zip.
 2. Extrair em uma pasta local.
-3. Abrir gerenciador de extensoes.
+3. Abrir gerenciador de extensões.
 4. Ativar modo desenvolvedor.
-5. Carregar extensao sem compactacao.
+5. Carregar extensão sem compactação.
+6. Acessar domínio `.bet.br`.
+7. Aceitar termo no prompt da extensão.
+8. Extensão inicia envio de eventos e snapshots.
 
-## 5) Atualizacao do arquivo da extensao
+## Atualização do arquivo da extensão
 
-Gerar zip da extensao:
+Gerar zip:
 
 ```bash
 npm run zip:extension
 ```
 
-Copiar o ultimo zip gerado para o botao de download do web:
+Sincronizar zip gerado para botão de download:
 
 ```bash
 npm run sync:extension-zip
@@ -87,7 +90,20 @@ Fluxo completo de release local:
 npm run release:extension
 ```
 
-## 6) Endpoint de versao para a extensao
+## Banco de dados e retenção
+
+Migrações:
+
+- `supabase/migrations/20260515153000_init_extension_events.sql`
+- `supabase/migrations/20260515181000_collector_data_model.sql`
+
+Regras atuais:
+
+- `odds_snapshots`: TTL de 1 hora via `expires_at`.
+- Job `pg_cron` executa limpeza a cada 5 minutos.
+- Dados de conta/apostas: persistência sem expurgo automático.
+
+## Endpoint de versão da extensão
 
 Endpoint:
 
@@ -97,12 +113,9 @@ Retorna:
 
 - versao atual
 - URL de download do zip
-- data de publicacao
+- data de publicação
 
-## 7) Banco e RLS
+## Documentação de continuidade
 
-Migracao inicial:
-
-- `supabase/migrations/20260515153000_init_extension_events.sql`
-
-Ela cria a tabela `public.extension_events`, habilita RLS e libera `insert` para `anon` e `authenticated` apenas para eventos `startup` e `install`.
+- `docs/collector-architecture.md`
+- `docs/ai-handover.md`
