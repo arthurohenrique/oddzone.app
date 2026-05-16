@@ -1,3 +1,6 @@
+import { ExtensionVersionNotice } from "./components/extension-version-notice";
+import { InstallationGuideModal } from "./components/installation-guide-modal";
+
 const extensionDownloadPath =
   process.env.NEXT_PUBLIC_EXTENSION_DOWNLOAD_PATH ??
   "/downloads/oddzone-extension.zip";
@@ -11,7 +14,7 @@ export default function HomePage() {
 
         <div className="home-actions">
           <a href={extensionDownloadPath} download className="apple-button">
-            Baixar extensão (.zip)
+            Baixar extensao (.zip)
           </a>
         </div>
 
@@ -23,21 +26,11 @@ export default function HomePage() {
           .
         </p>
 
-        <details className="home-guide">
-          <summary className="home-guide-summary">
-            <span className="home-guide-icon" aria-hidden>
-              i
-            </span>
-            Ver passo a passo
-          </summary>
-          <ol className="home-steps">
-            <li>Baixe o arquivo ZIP da extensão.</li>
-            <li>Extraia o ZIP em uma pasta local.</li>
-            <li>Abra a página de extensões do navegador.</li>
-            <li>Ative o Modo do desenvolvedor.</li>
-            <li>Use "Carregar sem compactação".</li>
-          </ol>
-        </details>
+        <ExtensionVersionNotice downloadPath={extensionDownloadPath} />
+
+        <div className="install-entry-row">
+          <InstallationGuideModal downloadPath={extensionDownloadPath} />
+        </div>
       </section>
     </main>
   );

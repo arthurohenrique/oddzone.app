@@ -32,6 +32,8 @@ Base técnica:
    - `WXT_PUBLIC_COLLECTOR_SHARED_TOKEN` (extensão)
    - `WXT_PUBLIC_COLLECTOR_INGEST_URL` (opcional, default de build: `https://oddzone.vercel.app/api/collector/ingest`)
    - `WXT_PUBLIC_TERMS_VERSION`
+   - `NEXT_PUBLIC_EXTENSION_DOWNLOAD_PATH` (opcional, default: `/downloads/oddzone-extension.zip`)
+   - `NEXT_PUBLIC_EXTENSION_VERSION` (opcional, usado pelo endpoint de versao)
 
 ## Instalar dependências
 
@@ -61,14 +63,17 @@ npm run dev:extension
 
 Fluxo de uso:
 
-1. Baixar o zip.
-2. Extrair em uma pasta local.
-3. Abrir gerenciador de extensões.
+1. Baixar o arquivo `.zip`.
+2. Extrair o conteúdo em uma pasta local.
+3. Abrir `chrome://extensions`.
 4. Ativar modo desenvolvedor.
-5. Carregar extensão sem compactação.
+5. Clicar em `Carregar sem compactação` e selecionar a pasta extraída.
 6. Acessar domínio `.bet.br`.
 7. Aceitar termo no prompt da extensão.
 8. Extensão inicia envio de eventos e snapshots.
+
+Na landing, as instrucoes detalhadas ficam ocultas por padrao e abrem via botao
+`Como instalar ?`, em modal visual com cenas animadas em codigo.
 
 ## Troubleshooting rápido (ingestão de odds)
 
@@ -109,6 +114,30 @@ Fluxo completo de release local:
 npm run release:extension
 ```
 
+O fluxo `release:extension` agora executa:
+
+1. `build:extension` (gera build em `.output/chrome-mv3`)
+2. `zip:extension` (artefato auxiliar)
+3. `sync:extension-zip` (publica artefatos em `apps/web/public/downloads`)
+
+## Aviso sutil de nova versão no site
+
+O site tenta detectar a versão instalada da extensão e compara com a versão
+publicada no endpoint:
+
+- `GET /api/extension/latest`
+
+Quando detectar versão local menor que a versão publicada, o site exibe um aviso
+discreto com CTA para baixar o ZIP novamente.
+
+Quando detectar extensão instalada e versão em dia, o site exibe apenas um
+feedback sutil de “extensão detectada”.
+
+Observações:
+
+- para usuário sem extensão instalada, o comportamento é silencioso (sem alerta);
+- o aviso depende do content script injetado no domínio do site.
+
 ## Banco de dados e retenção
 
 Migrações:
@@ -131,7 +160,7 @@ Endpoint:
 Retorna:
 
 - versao atual
-- URL de download do zip
+- URL de download do ZIP
 - data de publicação
 
 ## Documentação de continuidade

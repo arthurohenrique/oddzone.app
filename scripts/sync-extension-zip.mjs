@@ -6,18 +6,18 @@ const outputDir = resolve(projectRoot, "apps/extension/.output");
 const downloadsDir = resolve(projectRoot, "apps/web/public/downloads");
 const outputZipPath = resolve(downloadsDir, "oddzone-extension.zip");
 
-async function getLatestZipFile(pathToSearch) {
+async function getLatestFileByExtension(pathToSearch, extension) {
   const files = await readdir(pathToSearch);
-  const zipCandidates = files.filter((file) => file.endsWith(".zip"));
+  const candidates = files.filter((file) => file.endsWith(extension));
 
-  if (zipCandidates.length === 0) {
+  if (candidates.length === 0) {
     throw new Error(
-      "Nenhum arquivo .zip encontrado em apps/extension/.output. Rode `npm run zip:extension` antes."
+      `Nenhum arquivo ${extension} encontrado em apps/extension/.output. Rode o release da extensao antes.`
     );
   }
 
   const withMetadata = await Promise.all(
-    zipCandidates.map(async (filename) => {
+    candidates.map(async (filename) => {
       const fullPath = join(pathToSearch, filename);
       const metadata = await stat(fullPath);
       return { fullPath, mtime: metadata.mtimeMs };
@@ -30,8 +30,10 @@ async function getLatestZipFile(pathToSearch) {
 
 async function main() {
   await mkdir(downloadsDir, { recursive: true });
-  const latestZip = await getLatestZipFile(outputDir);
+  const latestZip = await getLatestFileByExtension(outputDir, ".zip");
+
   await copyFile(latestZip, outputZipPath);
+
   console.log(`Arquivo atualizado: ${outputZipPath}`);
 }
 

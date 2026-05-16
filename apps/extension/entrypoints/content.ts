@@ -2,6 +2,9 @@ import { TERMS_TEXT, isBetBrDomain } from "../lib/collector-config";
 import { collectSnapshotFromPage } from "../lib/provider-adapters";
 import type { ConsentState } from "../lib/collector-types";
 
+const VERSION_REQUEST_TYPE = "oddzone:extension-version:request";
+const VERSION_RESPONSE_TYPE = "oddzone:extension-version:response";
+
 async function sendToBackground<T>(message: unknown): Promise<T> {
   return chrome.runtime.sendMessage(message) as Promise<T>;
 }
@@ -63,10 +66,44 @@ async function getConsent(): Promise<ConsentState> {
   return response.consent;
 }
 
+function isOddzoneSite(hostname: string): boolean {
+  return (
+    hostname === "oddzone.app" ||
+    hostname.endsWith(".oddzone.app") ||
+    hostname === "oddzone.vercel.app" ||
+    hostname === "localhost" ||
+    hostname === "127.0.0.1"
+  );
+}
+
+function setupVersionBridge() {
+  window.addEventListener("message", (event: MessageEvent<unknown>) => {
+    if (event.source !== window) return;
+    if (!event.data || typeof event.data !== "object") return;
+
+    const payload = event.data as { type?: string; requestId?: string };
+    if (payload.type !== VERSION_REQUEST_TYPE) return;
+
+    window.postMessage(
+      {
+        type: VERSION_RESPONSE_TYPE,
+        requestId: payload.requestId ?? null,
+        version: chrome.runtime.getManifest().version
+      },
+      window.location.origin
+    );
+  });
+}
+
 export default defineContentScript({
   matches: ["<all_urls>"],
   main() {
     const hostname = window.location.hostname.toLowerCase();
+    if (isOddzoneSite(hostname)) {
+      setupVersionBridge();
+      return;
+    }
+
     if (!isBetBrDomain(hostname)) return;
 
     let currentUrl = window.location.href;

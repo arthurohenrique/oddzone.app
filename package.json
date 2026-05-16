@@ -13,6 +13,6 @@
     "build:extension": "npm run build --workspace @oddzone/extension",
     "zip:extension": "npm run zip --workspace @oddzone/extension",
     "sync:extension-zip": "node scripts/sync-extension-zip.mjs",
-    "release:extension": "npm run zip:extension && npm run sync:extension-zip"
+    "release:extension": "npm run build:extension && npm run zip:extension && npm run sync:extension-zip"
   }
 }

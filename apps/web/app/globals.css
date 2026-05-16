@@ -138,42 +138,602 @@ a {
   filter: brightness(0.98);
 }
 
-.home-steps {
-  margin: 14px 0 0;
-  padding-left: 20px;
-  color: #bebec2;
-  line-height: 1.8;
+.install-entry-row {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: block;
 }
 
-.home-guide {
+.extension-version-notice {
+  margin-top: 12px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #c9c9d1;
+  font-size: 12px;
+}
+
+.extension-version-notice.is-warning {
+  border: 1px solid rgba(255, 196, 77, 0.32);
+  background: rgba(255, 196, 77, 0.08);
+}
+
+.extension-version-notice.is-success {
+  border: 1px solid rgba(113, 213, 150, 0.26);
+  background: rgba(113, 213, 150, 0.07);
+  color: #b8eccc;
+}
+
+.extension-version-notice a {
+  color: #a9c6ff;
+  font-weight: 600;
+  text-decoration: underline;
+  white-space: nowrap;
+}
+
+.install-entry-copy {
+  color: #a7a7af;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.install-guide-text-trigger {
+  border: 0;
+  background: transparent;
+  color: #c8c8cf;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color 0.2s ease;
+}
+
+.install-guide-text-trigger:hover {
+  color: #f2f2f7;
+}
+
+.install-guide-text-trigger:focus-visible,
+.install-modal-close:focus-visible,
+.install-nav-button:focus-visible,
+.install-step-chip:focus-visible {
+  outline: 2px solid rgba(31, 111, 255, 0.9);
+  outline-offset: 2px;
+}
+
+.install-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  padding: 24px;
+  display: grid;
+  place-items: center;
+  background: rgba(3, 3, 7, 0.78);
+  backdrop-filter: blur(10px);
+}
+
+.install-modal-surface {
+  width: min(1080px, 100%);
+  max-height: min(900px, 96vh);
+  overflow: auto;
+  border-radius: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.08),
+      rgba(255, 255, 255, 0.02)
+    ),
+    #101014;
+  padding: 24px;
+}
+
+.install-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.install-modal-kicker {
+  margin: 0;
+  color: #9797a1;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.install-modal-title {
+  margin: 8px 0 0;
+  font-size: clamp(24px, 3.3vw, 36px);
+  line-height: 1.1;
+}
+
+.install-modal-close {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  color: #ececf1;
+  border-radius: 999px;
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.install-modal-content {
   margin-top: 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: start;
 }
 
-.home-guide-summary {
+.install-modal-media-wrap {
+  --scene-height: 430px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.03);
+  width: 100%;
+  height: var(--scene-height);
+  align-self: start;
+}
+
+.install-step-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  background: #111116;
+}
+
+.install-motion-scene {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 14px;
+  background: #f1f3f4;
+  border: 1px solid #d6d9de;
+  overflow: hidden;
+}
+
+.scene-step-01,
+.scene-step-02,
+.scene-step-03,
+.scene-step-04 {
+  display: grid;
+  grid-template-rows: 28px 34px 1fr;
+  gap: 0;
+}
+
+.scene-step-body {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.scene-browser-topbar {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-radius: 8px 8px 0 0;
+  background: #dfe3e8;
+  border: 1px solid #cfd4da;
+  border-bottom: none;
+}
+
+.scene-browser-topbar span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #aab0b8;
+}
+
+.scene-address-bar {
+  margin-top: 0;
+  height: 34px;
+  border-radius: 0 0 10px 10px;
+  border: 1px solid #cfd4da;
+  border-top: none;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: #4d535c;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.scene-hero {
+  margin-top: 0;
+  border: 1px solid #d9dce1;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 18px;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.scene-title-line {
+  height: 14px;
+  width: 72%;
+  border-radius: 999px;
+  background: #d8dde4;
+}
+
+.scene-title-line.short {
+  width: 48%;
+  margin-top: 8px;
+  background: #e2e6ec;
+}
+
+.scene-download-button {
+  width: fit-content;
+  margin-top: 18px;
+  min-height: 34px;
+  border-radius: 999px;
+  border: 1px solid #0d57d0;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
   display: inline-flex;
   align-items: center;
+  padding: 0 12px;
+  animation: scenePulse 2s ease-in-out infinite;
+}
+
+.scene-toolbar {
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 38px;
+  flex-shrink: 0;
+}
+
+.scene-toolbar-btn {
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  border: 1px solid #cfd4da;
+  background: #ffffff;
+  color: #3f4650;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.scene-dev-toggle-wrap {
+  margin-left: auto;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  border: 1px solid #cfd4da;
+  background: #ffffff;
+  color: #3f4650;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scene-dev-toggle {
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: #b5bcc5;
+  position: relative;
+  transition: background 0.25s ease;
+}
+
+.scene-dev-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 0.25s ease;
+}
+
+.scene-step-03 .scene-dev-toggle {
+  background: #1a73e8;
+  animation: togglePulse 2.2s ease-in-out infinite;
+}
+
+.scene-step-03 .scene-dev-toggle::after {
+  transform: translateX(12px);
+}
+
+.scene-extension-grid {
+  margin-top: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  cursor: pointer;
-  color: #c5c5cb;
+  min-height: 0;
+  flex: 1;
+}
+
+.scene-extension-card {
+  height: 100%;
+  min-height: 120px;
+  border-radius: 10px;
+  border: 1px solid #d6dbe2;
+  background: #ffffff;
+}
+
+.scene-dropzone {
+  margin-top: 0;
+  min-height: 88px;
+  border: 1px solid #cfd4da;
+  border-radius: 14px;
+  color: #2f5f9f;
+  background: #f8fbff;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.scene-confirm-dialog {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+  min-height: 0;
+  border-radius: 12px;
+  border: 1px solid #cfd4da;
+  background: #ffffff;
+  padding: 10px;
+  animation: scenePulse 2.4s ease-in-out infinite;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.scene-dialog-title {
+  color: #2a2f36;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.scene-file-picker {
+  margin-top: 8px;
+  border: 1px solid #d9dde3;
+  border-radius: 10px;
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.scene-file-picker-sidebar {
+  background: #f4f6f8;
+  border-right: 1px solid #dde2e8;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.scene-file-picker-sidebar span {
+  color: #5f6672;
+  font-size: 11px;
+}
+
+.scene-file-picker-main {
+  padding: 8px;
+  min-height: 0;
+}
+
+.scene-picker-path {
+  min-height: 24px;
+  border-radius: 7px;
+  border: 1px solid #d8dde4;
+  background: #f9fbfd;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  color: #5d6571;
+  font-size: 11px;
+}
+
+.scene-picker-folder {
+  margin-top: 6px;
+  min-height: 22px;
+  border-radius: 6px;
+  padding: 0 8px;
+  color: #434a54;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+}
+
+.scene-picker-folder.is-target {
+  background: #d9e9ff;
+  border: 1px solid #93baf2;
+}
+
+.scene-dialog-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  color: #5a626f;
+  font-size: 11px;
+}
+
+.scene-dialog-actions .primary {
+  color: #1a73e8;
+}
+
+.scene-extension-status-card {
+  margin-top: 12px;
+  border-radius: 12px;
+  border: 1px solid #d3d9e0;
+  background: #ffffff;
+  padding: 14px;
+  min-height: 210px;
+}
+
+.scene-status-title {
+  color: #2b3138;
   font-size: 14px;
+  font-weight: 600;
+}
+
+.scene-status-line {
+  margin-top: 7px;
+  color: #5a616b;
+  font-size: 12px;
+}
+
+.scene-status-badge {
+  width: fit-content;
+  margin-top: 12px;
+  min-height: 26px;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  border: 1px solid #cbe8cd;
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+}
+
+@keyframes scenePulse {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  50% {
+    transform: scale(1.015);
+    filter: brightness(1.1);
+  }
+}
+
+@keyframes togglePulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(47, 120, 255, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(47, 120, 255, 0);
+  }
+}
+
+.install-modal-side {
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 20px;
+}
+
+.install-step-id {
+  margin: 0;
+  color: #8b8b93;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+}
+
+.install-step-headline {
+  margin: 10px 0 0;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.install-step-action {
+  margin: 10px 0 0;
+  color: #bfbfc7;
+  font-size: 14px;
+}
+
+.install-step-picker {
+  margin: 18px 0 0;
+  padding: 0;
   list-style: none;
+  display: grid;
+  gap: 8px;
 }
 
-.home-guide-summary::-webkit-details-marker {
-  display: none;
+.install-step-chip {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.02);
+  color: #d9d9e0;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.home-guide-icon {
+.install-step-chip.is-active {
+  border-color: rgba(31, 111, 255, 0.75);
+  background: rgba(31, 111, 255, 0.22);
+  color: #fff;
+}
+
+.install-modal-actions {
+  margin-top: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.install-nav-button {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.03);
+  color: #ececf1;
+  border-radius: 999px;
+  min-height: 38px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  border: 1px solid #3a3a3f;
-  color: #d6d6dc;
-  font-size: 12px;
-  font-weight: 600;
+}
+
+.install-nav-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.install-nav-button-primary {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.2),
+      rgba(255, 255, 255, 0.06)
+    ),
+    #1f6fff;
+  color: #fff;
 }
 
 @media (max-width: 640px) {
@@ -184,5 +744,59 @@ a {
 
   .home-subtitle {
     font-size: 16px;
+  }
+
+  .install-entry-row {
+    display: block;
+  }
+
+  .extension-version-notice {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .install-modal-overlay {
+    padding: 12px;
+  }
+
+  .install-modal-surface {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .install-modal-content {
+    grid-template-columns: 1fr;
+  }
+
+  .install-modal-media-wrap {
+    --scene-height: 320px;
+  }
+
+  .install-step-video {
+    height: 100%;
+    aspect-ratio: auto;
+  }
+
+  .scene-extension-grid {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .scene-extension-card {
+    height: 92px;
+    min-height: 92px;
+  }
+
+  .scene-hero,
+  .scene-extension-status-card {
+    min-height: 180px;
+  }
+
+  .scene-confirm-dialog {
+    min-height: 0;
+  }
+
+  .install-modal-actions {
+    flex-wrap: wrap;
   }
 }

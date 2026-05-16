@@ -85,6 +85,51 @@ Limitação conhecida:
 - o token da extensão é embarcado no build e deve ser tratado como controle de atrito, não como autenticação forte.
 - para hardening futuro: assinatura por dispositivo + rotação de credencial curta + rate limit por instalação.
 
+## Distribuição e atualização da extensão (público comum)
+
+### Modelo adotado
+
+Para público comum, o fluxo atual usa:
+
+1. download do arquivo `.zip`;
+2. extração local da pasta da extensão;
+3. instalação por `chrome://extensions` com `Carregar sem compactação`.
+
+Não há auto-update nativo nesse modo.
+
+### Componentes do fluxo
+
+- `apps/web/app/page.tsx`
+  - CTA principal de download do ZIP;
+  - guia visual de instalação por pasta descompactada.
+- `apps/web/app/api/extension/latest/route.ts`
+  - expõe `version` e `downloadUrl` (ZIP).
+- `scripts/sync-extension-zip.mjs`
+  - publica apenas `oddzone-extension.zip` em `apps/web/public/downloads`.
+- `apps/extension/wxt.config.ts`
+  - manifesto sem `update_url`/`key` de distribuição CRX.
+
+### Detecção de versão no site
+
+Para reduzir fricção de atualização manual:
+
+- `apps/extension/entrypoints/content.ts`
+  - expõe bridge via `window.postMessage` em `oddzone.app` para responder versão instalada (`chrome.runtime.getManifest().version`).
+- `apps/web/app/components/extension-version-notice.tsx`
+  - consulta versão instalada + `GET /api/extension/latest`;
+  - mostra aviso sutil de atualização quando necessário;
+  - mostra feedback sutil de “extensão detectada” quando versão está em dia.
+
+### Sequência de release
+
+1. `npm run build:extension`
+2. `npm run zip:extension`
+3. `npm run sync:extension-zip`
+
+Comando agregado:
+
+- `npm run release:extension`
+
 Checklist operacional mínimo:
 
 1. Confirmar que `POST /api/collector/ingest` retorna `200` no service worker.
