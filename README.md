@@ -84,7 +84,7 @@ Se as odds não estiverem chegando no banco, valide nesta ordem:
    - se aparecer `ERR_CONNECTION_REFUSED`, a URL de ingestão está indisponível.
 2. **URL de ingestão no build da extensão**
    - produção usa por padrão: `https://oddzone.vercel.app/api/collector/ingest`.
-   - ambiente local: definir `WXT_PUBLIC_COLLECTOR_INGEST_URL=http://localhost:3000/api/collector/ingest`.
+   - valores locais (`localhost`/`127.0.0.1`) são ignorados no build final.
 3. **Token compartilhado**
    - `COLLECTOR_EXTENSION_SHARED_TOKEN` (web) deve ser igual ao `WXT_PUBLIC_COLLECTOR_SHARED_TOKEN` (extensão).
 4. **Sequência de tabelas no Supabase**

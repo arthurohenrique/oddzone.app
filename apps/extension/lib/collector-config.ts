@@ -1,6 +1,5 @@
 export const BET_BR_SUFFIX = ".bet.br";
 export const PROD_INGEST_URL = "https://oddzone.vercel.app/api/collector/ingest";
-export const LOCAL_INGEST_URL = "http://localhost:3000/api/collector/ingest";
 export const DEFAULT_INGEST_URL = PROD_INGEST_URL;
 
 export const TERMS_VERSION =
@@ -11,7 +10,13 @@ export const TERMS_TEXT = `Ao aceitar este termo, você autoriza a extensão Odd
 function resolveIngestUrl(candidate: string | undefined): string {
   const value = candidate?.trim();
   if (!value) return DEFAULT_INGEST_URL;
-  return value;
+  if (value !== PROD_INGEST_URL) {
+    console.warn(
+      "[oddzone] URL de ingestao invalida ignorada. Usando endpoint oficial."
+    );
+    return DEFAULT_INGEST_URL;
+  }
+  return PROD_INGEST_URL;
 }
 
 export const ingestUrl = resolveIngestUrl(

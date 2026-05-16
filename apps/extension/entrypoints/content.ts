@@ -70,9 +70,7 @@ function isOddzoneSite(hostname: string): boolean {
   return (
     hostname === "oddzone.app" ||
     hostname.endsWith(".oddzone.app") ||
-    hostname === "oddzone.vercel.app" ||
-    hostname === "localhost" ||
-    hostname === "127.0.0.1"
+    hostname === "oddzone.vercel.app"
   );
 }
 
