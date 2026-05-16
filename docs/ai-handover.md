@@ -292,6 +292,48 @@ Impacto: operação e suporte têm guia completo sem depender de conhecimento im
 - `npm run build:web` (ok).
 - Lints dos arquivos alterados sem erros.
 
+## Atualização recente (2026-05-15) - diagnóstico por partes da ingestão
+
+### Objetivo
+
+- Isolar falhas de produção (`ERR_CONNECTION_REFUSED`) com evidência simples em logs.
+
+### Mudanças implementadas
+
+#### 1) `apps/extension/lib/collector-api.ts`
+
+- Logs objetivos no envio:
+  - `envio iniciado` (evento, URL, timestamp),
+  - `erro de rede` (com `navigator.onLine` quando disponível),
+  - `erro http` (status + URL),
+  - `envio concluido`.
+- Precheck de conectividade uma vez por sessão:
+  - `precheck concluido` (status) ou
+  - `precheck host inacessivel`.
+
+#### 2) `apps/extension/entrypoints/background.ts`
+
+- Log único de startup:
+  - versão da extensão e URL ativa de ingestão.
+
+#### 3) `apps/web/app/api/collector/ingest/route.ts`
+
+- Logs de entrada/erro com `requestId` para correlação.
+- Loga `eventType`, `installationId`, `siteDomain`, `x-collector-source` e presença de token.
+
+#### 4) `README.md`
+
+- Novo runbook de diagnóstico em 3 blocos:
+  1. extensão,
+  2. API (requestId),
+  3. banco.
+
+### Como usar no próximo incidente
+
+1. Capturar logs da extensão e identificar URL/tipo da falha (rede vs HTTP).
+2. Correlacionar no backend pelo `requestId`.
+3. Validar inserts esperados no Supabase conforme `eventType`.
+
 ## Estado atual (implementado)
 
 ### 1) Coleta com consentimento

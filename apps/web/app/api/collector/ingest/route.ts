@@ -244,6 +244,7 @@ async function insertFailure(
 }
 
 export async function POST(request: Request) {
+  const requestId = crypto.randomUUID();
   let parsedBody: IngestBody | null = null;
 
   try {
@@ -253,6 +254,7 @@ export async function POST(request: Request) {
 
     if (expectedToken && incomingToken !== expectedToken) {
       console.warn("[collector_ingest] token inválido", {
+        requestId,
         source: request.headers.get("x-collector-source"),
         hasIncomingToken: Boolean(incomingToken)
       });
@@ -262,6 +264,7 @@ export async function POST(request: Request) {
     const collectorSource = request.headers.get("x-collector-source");
     if (collectorSource !== "oddzone-extension") {
       console.warn("[collector_ingest] origem inválida", {
+        requestId,
         collectorSource
       });
       return NextResponse.json({ error: "Origem invalida" }, { status: 400 });
@@ -272,9 +275,12 @@ export async function POST(request: Request) {
     assertBody(body);
 
     console.info("[collector_ingest] evento recebido", {
+      requestId,
       eventType: body.eventType,
       installationId: body.installationId,
-      siteDomain: body.siteDomain ?? "unknown.bet.br"
+      siteDomain: body.siteDomain ?? "unknown.bet.br",
+      collectorSource,
+      hasIncomingToken: Boolean(incomingToken)
     });
 
     await upsertInstallation(
@@ -299,6 +305,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("[collector_ingest] erro durante ingestão", {
+      requestId,
       eventType: parsedBody?.eventType ?? "unknown",
       installationId: parsedBody?.installationId ?? "unknown",
       siteDomain: parsedBody?.siteDomain ?? "unknown.bet.br",

@@ -94,6 +94,27 @@ Se as odds não estiverem chegando no banco, valide nesta ordem:
 6. **TTL de odds**
    - `odds_snapshots` expira em 1 hora e é limpo pelo `pg_cron` a cada 5 minutos.
 
+## Diagnóstico rápido (produção / connection refused)
+
+Quando ocorrer `ERR_CONNECTION_REFUSED`, siga em blocos:
+
+1. **Extensão (service worker)**
+   - procurar logs:
+     - `[oddzone][background] iniciado`
+     - `[oddzone][ingest] precheck ...`
+     - `[oddzone][ingest] envio iniciado`
+     - `[oddzone][ingest] erro de rede` ou `[oddzone][ingest] erro http`
+   - confirmar URL alvo em todos os logs.
+2. **API (Vercel)**
+   - buscar logs por `requestId` no prefixo `[collector_ingest]`.
+   - validar se evento chegou e com quais headers (`x-collector-source`, token).
+3. **Banco (Supabase)**
+   - se API recebeu e respondeu `ok`, validar inserts por tipo:
+     - `collector_installations` (sempre),
+     - `site_sessions` (page_seen),
+     - `account_profiles` / `bets` / `odds_snapshots` (snapshot),
+     - `collector_failures` (collector_failure).
+
 ## Atualização do arquivo da extensão
 
 Gerar zip:

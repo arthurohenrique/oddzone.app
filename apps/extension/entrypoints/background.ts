@@ -1,4 +1,5 @@
 import { postCollectorPayload } from "../lib/collector-api";
+import { ingestUrl } from "../lib/collector-config";
 import { acceptCurrentTerms, getConsentState, getOrCreateInstallationId } from "../lib/collector-consent";
 import type { CollectorIngestPayload, ConsentState, ExtensionLifecycleType, SnapshotPayload } from "../lib/collector-types";
 
@@ -48,6 +49,11 @@ type ExtensionMessage =
   | { type: "collector:failure"; sourceUrl: string | null; siteDomain: string | null; code: string; message: string; rawPayload?: Record<string, unknown> };
 
 export default defineBackground(() => {
+  console.info("[oddzone][background] iniciado", {
+    extensionVersion: extensionVersion(),
+    ingestUrl
+  });
+
   chrome.runtime.onStartup.addListener(async () => {
     try {
       await sendLifecycle("startup");
