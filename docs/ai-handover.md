@@ -2,6 +2,119 @@
 
 Este documento registra estado atual, decisões e próximos passos para continuidade sem perda de contexto.
 
+## Atualização recente (2026-05-21) — fix v2: contexto da página + filtro de candidatos lixo
+
+### Sintoma persistente
+
+Mesmo após v0.3.0, dashboard continuava mostrando "Evento desconhecido" em quase todas as odds da Betano. Screenshot do usuário mostrou também uma odd com `selection: "1 · Próximos jogosVencedores da Competição..."` — texto colado de menu lateral inteiro, claramente captura errada.
+
+### Análise dos screenshots da Betano
+
+URL: `/futebol/equador/liga-pro-serie-a/independiente-del-valle-libertad-loja-...`
+
+Breadcrumb: `Página principal > Futebol > Equador > Liga Pro Serie A > Independiente del Valle - Libertad Loja`
+
+Cards de mercado: `Resultado Final SuperOdds`, `Resultado Final`, `Chance Dupla`, etc. — cada um com botões 1/X/2 ou Sim/Não. **Cada "card" no DOM é um GRUPO DE MERCADO, não um card de evento.** O nome do evento (times) aparece UMA vez no header global da página, não dentro de cada grupo.
+
+`aria-label` dos botões da Betano (extraído do dashboard): `"Bet on Libertad Loja ou Empate with odds 3.6"`, `"Bet on Mais de 2.5 with odds 1.57"` — tem o nome da seleção mas **NÃO tem o nome do evento completo** (não diz "Independiente del Valle vs Libertad Loja"). Só por aria-label, impossível recuperar `home_team` + `away_team`.
+
+### Causas v2
+
+1. **Parser dependia de encontrar um "event card" local** para extrair times. Na Betano (e provavelmente outras), times estão no header global.
+2. **`isOddCandidateValid` inexistente** — qualquer `[role="button"]` ou `button[aria-label]` virava candidato. Botão de menu "Próximos jogos" tinha texto colado com "22.00" em algum lugar → parser pegava como odd.
+3. **`cleanSelection` ausente** — `selection` saía com "Bet on " e "with odds X.XX" literais.
+
+### Correção v2
+
+#### 1) Contexto da página extraído UMA vez (`extractPageContext`)
+
+Função nova roda no início do snapshot e tenta 3 estratégias em ordem:
+
+**a) Breadcrumb (`parseBreadcrumb`)** — procura `[class*="breadcrumb"]`, `nav[class*="path"]`, etc. Coleta items deduplicados. Se o último item tem separador de times (`vs`/`x`/`-`/`—`/`–`/`|`), assume:
+- `eventName` = último item ("Independiente del Valle - Libertad Loja")
+- `league` = penúltimo item ("Liga Pro Serie A")
+- `homeTeam`/`awayTeam` = parse do `eventName`
+
+**b) Header global (`extractGlobalEventHeader`)** — procura `[class*="event-header"]`, `[class*="match-header"]`, `header`, `[role="banner"]`. Tenta parse do texto direto OU procura 2 elementos `[class*="team-name"]` dentro.
+
+**c) URL (`parseUrlEvent`)** — pathname tipo `/futebol/equador/liga-pro-serie-a/independiente-del-valle-libertad-loja-xxxx`. Pega último segmento, remove sufixo numérico, splita em `-vs-`/`-x-` ou heurística de dois nomes separados.
+
+O resultado é um `PageContext = { eventName, homeTeam, awayTeam, league }` usado como fallback em todas as odds do snapshot. Resolvido o caso onde os botões não têm o nome do evento no aria-label.
+
+#### 2) Filtro de candidatos lixo (`isOddCandidateValid`)
+
+Antes de tentar extrair odd de um elemento, valida:
+
+- **`descendants <= 12`** — botões com muitos filhos são menus/cards complexos, não odds atômicas.
+- **`text.length <= 250`** — odd legítima tem texto curto.
+- **Se tem `aria-label`**, ele precisa parecer com aposta: conter `odd`/`cota`/`aposte`/`bet on` OU número que pareça odd (`\b\d{1,2}[.,]\d{1,3}\b`). Botão de menu "Próximos jogos" sem nada disso é rejeitado direto.
+
+Resultado esperado: o lixo `"1 · Próximos jogosVencedores..."` não passa nem por `extractOddCandidate`.
+
+#### 3) `cleanSelection` para limpar aria-label
+
+Remove padrões ruidosos: `bet on`, `aposte em`, `aposta em`, `com odds`, `with odds`, `cotação de`, `odds`. Remove número solto no fim (que era o valor da odd repetido). Recusa selections >120 chars ou só números.
+
+E `parseAriaLabel` agora extrai seleção via regex:
+```
+/(?:bet on|aposte em|aposta em)\s+(.+?)(?:\s+(?:with odds|com odds|odds)\s+|$)/i
+```
+
+Resultado: `"Bet on Libertad Loja ou Empate with odds 3.6"` → selection: `"Libertad Loja ou Empate"`. Limpo.
+
+#### 4) Cascata de fallback por campo
+
+```ts
+eventName = card[data-event-name] ?? parseAriaLabel(home+away) ?? pageContext.eventName
+homeTeam  = parseAriaLabel(home) ?? pageContext.homeTeam
+awayTeam  = parseAriaLabel(away) ?? pageContext.awayTeam
+market    = extractMarket(element, card) ?? parseAriaLabel(market)
+league    = extractLeague(card) ?? pageContext.league
+selection = parseAriaLabel(selection) ?? cleanSelection(element.textContent)
+```
+
+Cada odd herda contexto da página quando o local falha. O filtro estrito `(!eventName || !market) → descarta` segue válido.
+
+#### 5) Listas estendidas
+
+- `BREADCRUMB_SELECTORS` (novo) — cobre breadcrumb de várias casas.
+- `KNOWN_LEAGUES` ganhou "liga pro serie a" (Equador).
+- `FOOTBALL_MARKET_KEYWORDS` ganhou "chance dupla", "mais/menos", "mais de", "menos de".
+- `TEAM_SEPARATORS` ganhou " | ".
+- `SELECTION_NOISE_PATTERNS` (novo) — regex array para limpeza.
+
+#### 6) Telemetria estendida
+
+`[oddzone][capture]` agora também loga `pageEvent` e `pageLeague` extraídos:
+
+```
+[oddzone][capture] {
+  bookmaker: "betano",
+  pageEvent: "Independiente del Valle - Libertad Loja",
+  pageLeague: "Liga Pro Serie A",
+  rawCandidates: 287, withOdd: 124, accepted: 38,
+  droppedNoContext: 81, droppedLowScore: 5
+}
+```
+
+Se `pageEvent` vier `null`, indica que nenhuma das 3 estratégias (breadcrumb/header/URL) funcionou — sinal para adicionar seletores específicos da casa.
+
+### Versão e release
+
+`wxt.config.ts` → `0.3.1`. Zip regerado. Auto-reload das abas dispara.
+
+### Como validar
+
+1. Atualizar extensão (`chrome://extensions` → Remover → Carregar a pasta nova).
+2. Acessar `betano.bet.br/futebol/.../jogo-x`.
+3. **DevTools do site da Betano** → console → procurar `[oddzone][capture] { pageEvent: "Independiente del Valle - Libertad Loja", ... }`.
+4. Recarregar `oddzone.vercel.app` → dashboard mostra "Independiente del Valle vs Libertad Loja" no lugar de "Evento desconhecido"; selections limpas; nada de menu lateral lixo.
+
+### Próximas calibrações
+
+- Se `pageEvent: null` numa casa, capturar screenshot do breadcrumb/header e estender `BREADCRUMB_SELECTORS` ou criar `extractGlobalEventHeader` específico.
+- Tamanho do bundle do content script: 20kB (era 18.7kB). Margem confortável até ~40kB.
+
 ## Atualização recente (2026-05-21) — fix: extração completa do contexto de cada odd (event/market/teams/league)
 
 ### Sintoma reportado

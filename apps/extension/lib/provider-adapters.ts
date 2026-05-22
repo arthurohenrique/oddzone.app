@@ -92,6 +92,14 @@ const MARKET_CONTAINER_SELECTORS = [
   '[class*="market"]'
 ];
 
+const BREADCRUMB_SELECTORS = [
+  '[class*="breadcrumb"]',
+  '[class*="Breadcrumb"]',
+  '[aria-label*="breadcrumb" i]',
+  'nav[class*="path"]',
+  'ol[class*="path"]'
+];
+
 const KNOWN_LEAGUES = [
   "brasileirao",
   "brasileirão",
@@ -130,7 +138,8 @@ const KNOWN_LEAGUES = [
   "j1 league",
   "copa america",
   "copa do nordeste",
-  "estaduais"
+  "estaduais",
+  "liga pro serie a"
 ];
 
 const FOOTBALL_MARKET_KEYWORDS = [
@@ -165,19 +174,37 @@ const FOOTBALL_MARKET_KEYWORDS = [
   "ht/ft",
   "dupla chance",
   "double chance",
+  "chance dupla",
   "marcador correto",
   "correct score",
   "placar exato",
   "draw no bet",
   "empate anula",
   "vencedor",
-  "para vencer"
+  "para vencer",
+  "mais/menos",
+  "mais de",
+  "menos de"
 ];
 
 const FOOTBALL_URL_KEYWORDS = ["futebol", "soccer", "football"];
 const FOOTBALL_BREADCRUMB_KEYWORDS = ["futebol", "soccer", "football"];
 
-const TEAM_SEPARATORS = [" vs ", " x ", " v ", " - ", " — ", " – "];
+const TEAM_SEPARATORS = [" vs ", " x ", " v ", " - ", " — ", " – ", " | "];
+
+const SELECTION_NOISE_PATTERNS = [
+  /\bbet on\s+/gi,
+  /\baposte em\s+/gi,
+  /\baposta em\s+/gi,
+  /\bcom odds?\b/gi,
+  /\bwith odds?\b/gi,
+  /\bcotaç[aã]o\s+de\s+/gi,
+  /\bodds?\b/gi
+];
+
+// Limites pra evitar pegar lixo (menus, botões grandes)
+const MAX_SELECTION_LENGTH = 120;
+const MAX_BUTTON_DESCENDANTS = 12;
 
 function normalizeText(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -271,6 +298,185 @@ function detectLeagueInText(text: string | null): string | null {
   return null;
 }
 
+function extractTeamsFromText(text: string | null): {
+  home: string | null;
+  away: string | null;
+} {
+  if (!text) return { home: null, away: null };
+  for (const sep of TEAM_SEPARATORS) {
+    const lower = text.toLowerCase();
+    const index = lower.indexOf(sep);
+    if (index > 0) {
+      const home = text.slice(0, index).trim();
+      const away = text.slice(index + sep.length).trim();
+      if (
+        home && away &&
+        home.length >= 2 && home.length < 60 &&
+        away.length >= 2 && away.length < 60 &&
+        !/\d{2}:\d{2}/.test(home) && !/\d{2}:\d{2}/.test(away)
+      ) {
+        return { home, away };
+      }
+    }
+  }
+  return { home: null, away: null };
+}
+
+function cleanSelection(value: string | null): string | null {
+  if (!value) return null;
+  let result = value;
+  for (const pattern of SELECTION_NOISE_PATTERNS) {
+    result = result.replace(pattern, " ");
+  }
+  // remove trailing odd value (números soltos no fim)
+  result = result.replace(/\d{1,4}([.,]\d{1,3})?\.?\s*$/, "");
+  // remove "with odds X.XX." padrão completo
+  result = result.replace(/[.,]\s*$/, "");
+  const normalized = normalizeText(result);
+  if (!normalized) return null;
+  if (normalized.length > MAX_SELECTION_LENGTH) return null;
+  if (/^\d+([.,]\d+)?$/.test(normalized)) return null;
+  return normalized;
+}
+
+// --- Contexto da página (extraído UMA vez por snapshot) ---
+
+type PageContext = {
+  eventName: string | null;
+  homeTeam: string | null;
+  awayTeam: string | null;
+  league: string | null;
+};
+
+function parseBreadcrumb(doc: Document): {
+  league: string | null;
+  eventName: string | null;
+} {
+  for (const selector of BREADCRUMB_SELECTORS) {
+    const container = doc.querySelector(selector);
+    if (!container) continue;
+
+    const items = Array.from(container.querySelectorAll<HTMLElement>("a, li, span"))
+      .map((el) => readElementText(el))
+      .filter((text): text is string => Boolean(text && text.length > 1 && text.length < 80));
+
+    // Remove duplicações causadas por <li><a>texto</a></li>
+    const unique: string[] = [];
+    for (const item of items) {
+      if (unique[unique.length - 1] !== item) unique.push(item);
+    }
+
+    if (unique.length < 2) continue;
+
+    // Heurística: o último item é o evento; o penúltimo costuma ser a liga.
+    const last = unique[unique.length - 1];
+    const penultimate = unique[unique.length - 2];
+
+    const { home, away } = extractTeamsFromText(last);
+    if (home && away) {
+      return { league: penultimate, eventName: last };
+    }
+  }
+
+  return { league: null, eventName: null };
+}
+
+function extractGlobalEventHeader(doc: Document): {
+  eventName: string | null;
+  homeTeam: string | null;
+  awayTeam: string | null;
+} {
+  // Procura headers com dois nomes de time vizinhos (padrão página de evento)
+  const candidates = Array.from(
+    doc.querySelectorAll<HTMLElement>(
+      '[class*="event-header"], [class*="EventHeader"], [class*="match-header"], [class*="MatchHeader"], [class*="fixture-header"], header, [role="banner"]'
+    )
+  ).slice(0, 8);
+
+  for (const container of candidates) {
+    const text = readElementText(container);
+    if (text) {
+      const parsed = extractTeamsFromText(text);
+      if (parsed.home && parsed.away) {
+        return {
+          eventName: `${parsed.home} vs ${parsed.away}`,
+          homeTeam: parsed.home,
+          awayTeam: parsed.away
+        };
+      }
+    }
+
+    // Tentar achar 2 elementos de time dentro do header
+    for (const selector of TEAM_SELECTORS) {
+      const teams = Array.from(container.querySelectorAll<HTMLElement>(selector));
+      if (teams.length >= 2) {
+        const home = readElementText(teams[0]);
+        const away = readElementText(teams[1]);
+        if (home && away && home !== away && home.length < 60 && away.length < 60) {
+          return { eventName: `${home} vs ${away}`, homeTeam: home, awayTeam: away };
+        }
+      }
+    }
+  }
+
+  return { eventName: null, homeTeam: null, awayTeam: null };
+}
+
+function parseUrlEvent(location: Location): {
+  eventName: string | null;
+  homeTeam: string | null;
+  awayTeam: string | null;
+} {
+  // URL típica: /futebol/equador/liga-pro-serie-a/independiente-del-valle-libertad-loja-xxxx
+  const path = decodeURIComponent(location.pathname).toLowerCase();
+  const segments = path.split("/").filter(Boolean);
+  const lastSegment = segments[segments.length - 1] ?? "";
+
+  // Tenta encontrar separador entre dois nomes
+  const cleaned = lastSegment
+    .replace(/-\d+$/g, "") // remove sufixos numéricos
+    .replace(/-vs-/g, "|")
+    .replace(/-x-/g, "|");
+
+  const parts = cleaned.split("|");
+  if (parts.length === 2) {
+    const home = parts[0].replace(/-/g, " ").trim();
+    const away = parts[1].replace(/-/g, " ").trim();
+    if (home && away && home.length < 60 && away.length < 60) {
+      return {
+        eventName: `${home} vs ${away}`,
+        homeTeam: home,
+        awayTeam: away
+      };
+    }
+  }
+
+  return { eventName: null, homeTeam: null, awayTeam: null };
+}
+
+function extractPageContext(doc: Document, location: Location): PageContext {
+  const fromBreadcrumb = parseBreadcrumb(doc);
+  const fromHeader = extractGlobalEventHeader(doc);
+  const fromUrl = parseUrlEvent(location);
+
+  const eventName =
+    fromBreadcrumb.eventName ?? fromHeader.eventName ?? fromUrl.eventName;
+  const homeTeam =
+    fromHeader.homeTeam ??
+    extractTeamsFromText(fromBreadcrumb.eventName).home ??
+    fromUrl.homeTeam;
+  const awayTeam =
+    fromHeader.awayTeam ??
+    extractTeamsFromText(fromBreadcrumb.eventName).away ??
+    fromUrl.awayTeam;
+  const league =
+    fromBreadcrumb.league ?? detectLeagueInText(eventName ?? doc.title);
+
+  return { eventName, homeTeam, awayTeam, league };
+}
+
+// --- Account ---
+
 function readEmail(doc: Document): string | null {
   const candidates = Array.from(
     doc.querySelectorAll<HTMLElement>(
@@ -316,6 +522,8 @@ function collectAccount(doc: Document): AccountProfilePayload | null {
   return { email, displayName, balanceCents: cents, currency };
 }
 
+// --- Sinais de futebol da página ---
+
 function detectPageSignals(
   doc: Document,
   location: Location
@@ -343,131 +551,31 @@ function detectPageSignals(
   return { urlSignal, breadcrumbSignal, pageHeaderSignal };
 }
 
-// --- Estratégias de extração (em camadas) ---
-
-function extractTeamsFromText(text: string | null): {
-  home: string | null;
-  away: string | null;
-} {
-  if (!text) return { home: null, away: null };
-  for (const sep of TEAM_SEPARATORS) {
-    const lower = text.toLowerCase();
-    const index = lower.indexOf(sep);
-    if (index > 0) {
-      const home = text.slice(0, index).trim();
-      const away = text.slice(index + sep.length).trim();
-      if (
-        home && away &&
-        home.length >= 2 && home.length < 60 &&
-        away.length >= 2 && away.length < 60 &&
-        // descartar coisas que claramente não são nomes de time
-        !/\d{2}:\d{2}/.test(home) && !/\d{2}:\d{2}/.test(away)
-      ) {
-        return { home, away };
-      }
-    }
-  }
-  return { home: null, away: null };
-}
-
-function extractTeamsFromStructure(card: HTMLElement | null): {
-  home: string | null;
-  away: string | null;
-} {
-  if (!card) return { home: null, away: null };
-
-  // Atributos diretos
-  const homeAttr = normalizeText(card.querySelector("[data-home-team]")?.getAttribute("data-home-team"));
-  const awayAttr = normalizeText(card.querySelector("[data-away-team]")?.getAttribute("data-away-team"));
-  if (homeAttr && awayAttr) return { home: homeAttr, away: awayAttr };
-
-  // Dois elementos de time vizinhos
-  for (const selector of TEAM_SELECTORS) {
-    const elements = Array.from(card.querySelectorAll<HTMLElement>(selector));
-    if (elements.length >= 2) {
-      const home = readElementText(elements[0]);
-      const away = readElementText(elements[1]);
-      if (
-        home && away &&
-        home !== away &&
-        home.length < 60 && away.length < 60
-      ) {
-        return { home, away };
-      }
-    }
-  }
-
-  return { home: null, away: null };
-}
-
-function extractEventName(card: HTMLElement | null): {
-  eventName: string | null;
-  home: string | null;
-  away: string | null;
-} {
-  if (!card) return { eventName: null, home: null, away: null };
-
-  // 1. Atributo direto no card ou descendente
-  const attrName = readAttrWithin(card, EVENT_NAME_ATTRS);
-  if (attrName) {
-    const { home, away } = extractTeamsFromText(attrName);
-    return { eventName: attrName, home, away };
-  }
-
-  // 2. Estrutura: dois elementos de time
-  const structured = extractTeamsFromStructure(card);
-  if (structured.home && structured.away) {
-    return {
-      eventName: `${structured.home} vs ${structured.away}`,
-      home: structured.home,
-      away: structured.away
-    };
-  }
-
-  // 3. Cabeçalho do card (limitado ao escopo do card)
-  const headerText = readWithin(card, [
-    '[data-testid*="event-name"]',
-    '[data-testid*="match-name"]',
-    '[data-testid*="fixture-name"]',
-    '[class*="event-name"]',
-    '[class*="EventName"]',
-    '[class*="match-name"]',
-    '[class*="MatchName"]',
-    '[class*="fixture-name"]',
-    "h1",
-    "h2",
-    "h3",
-    "h4"
-  ]);
-  if (headerText) {
-    const { home, away } = extractTeamsFromText(headerText);
-    if (home && away) return { eventName: headerText, home, away };
-  }
-
-  return { eventName: null, home: null, away: null };
-}
+// --- Market e league por odd ---
 
 function extractMarket(element: Element, card: HTMLElement | null): string | null {
-  // 1. Atributo direto
   const dataMarket =
     element.getAttribute("data-market-name") ??
     element.getAttribute("data-market");
   if (dataMarket && dataMarket.trim()) return normalizeText(dataMarket);
 
-  // 2. Container de mercado mais próximo
   const marketContainer = findClosest(element, MARKET_CONTAINER_SELECTORS);
   if (marketContainer) {
     const labelInContainer = readWithin(marketContainer, MARKET_LABEL_SELECTORS);
     if (labelInContainer) return labelInContainer;
+
+    // Procura header dentro do container
+    const header = marketContainer.querySelector<HTMLElement>("h1, h2, h3, h4");
+    const headerText = readElementText(header);
+    if (headerText && headerText.length < 100) return headerText;
   }
 
-  // 3. Label no card
   if (card) {
     const labelInCard = readWithin(card, MARKET_LABEL_SELECTORS);
     if (labelInCard) return labelInCard;
   }
 
-  // 4. Sibling acima com classe header
+  // Sibling acima com classe header
   let parent = element.parentElement;
   let safety = 0;
   while (parent && safety < 6) {
@@ -475,7 +583,7 @@ function extractMarket(element: Element, card: HTMLElement | null): string | nul
       '[class*="market-header"], [class*="market-title"], [class*="MarketHeader"], [class*="MarketTitle"]'
     );
     const headerText = readElementText(header);
-    if (headerText) return headerText;
+    if (headerText && headerText.length < 100) return headerText;
     parent = parent.parentElement;
     safety += 1;
   }
@@ -486,13 +594,11 @@ function extractMarket(element: Element, card: HTMLElement | null): string | nul
 function extractLeague(card: HTMLElement | null): string | null {
   if (!card) return null;
 
-  // 1. Atributo direto
   const attr =
     card.getAttribute("data-league-name") ??
     card.getAttribute("data-competition-name");
   if (attr && attr.trim()) return normalizeText(attr);
 
-  // 2. Subir N níveis procurando header de liga
   let scope: Element | null = card;
   let safety = 0;
   while (scope && safety < 6) {
@@ -502,56 +608,50 @@ function extractLeague(card: HTMLElement | null): string | null {
     safety += 1;
   }
 
-  // 3. Casar texto do card contra lista conhecida
   const known = detectLeagueInText(readElementText(card));
   if (known) return known;
 
   return null;
 }
 
-function extractSelectionLabel(element: HTMLElement): string | null {
-  const candidates = [
-    element.getAttribute("aria-label"),
-    element.getAttribute("data-selection-name"),
-    element.getAttribute("data-selection"),
-    element.getAttribute("title"),
-    element.textContent
-  ].map(normalizeText);
+// --- Parse de aria-label rico ---
 
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    // Filtra labels muito longas (provavelmente texto técnico)
-    if (candidate.length < 120 && !/^\d+([.,]\d+)?$/.test(candidate)) {
-      return candidate.length > 80 ? candidate.slice(0, 80) : candidate;
-    }
-  }
+type AriaParsed = {
+  home: string | null;
+  away: string | null;
+  market: string | null;
+  selection: string | null;
+};
 
-  return null;
-}
-
-// Tenta parsear toda a info de um aria-label rico (muitas casas colocam tudo lá)
-function parseAriaLabel(
-  label: string | null
-): { home: string | null; away: string | null; market: string | null; selection: string | null } {
+function parseAriaLabel(label: string | null): AriaParsed {
   if (!label) return { home: null, away: null, market: null, selection: null };
 
   const { home, away } = extractTeamsFromText(label);
+
   let market: string | null = null;
+  const lowerLabel = label.toLowerCase();
   for (const keyword of FOOTBALL_MARKET_KEYWORDS) {
-    if (label.toLowerCase().includes(keyword)) {
+    if (lowerLabel.includes(keyword)) {
       market = keyword;
       break;
     }
   }
 
-  // Seleção heurística: parte antes de "odds" / "cotação"
-  const splitMatch = label.match(/^(.*?)(?:\s*[-,.]\s*odds?|\s*[-,.]\s*cota[çc][aã]o)/i);
-  const selection = splitMatch ? normalizeText(splitMatch[1]) : null;
+  // "Bet on <X> with odds <Y>" / "Aposte em <X> com odds <Y>"
+  const selectionMatch = label.match(
+    /(?:bet on|aposte em|aposta em)\s+(.+?)(?:\s+(?:with odds|com odds|odds)\s+|$)/i
+  );
+  let selection: string | null = null;
+  if (selectionMatch) {
+    selection = cleanSelection(selectionMatch[1]);
+  } else {
+    selection = cleanSelection(label);
+  }
 
   return { home, away, market, selection };
 }
 
-// --- Detecção de 1X2 (sinal forte de futebol) ---
+// --- Detecção 1X2 ---
 
 function detectOneXTwo(card: HTMLElement | null): boolean {
   if (!card) return false;
@@ -592,22 +692,52 @@ function marketSignalsFootball(market: string | null): boolean {
   return FOOTBALL_MARKET_KEYWORDS.some((keyword) => lower.includes(keyword));
 }
 
-// --- Coleta principal ---
+// --- Filtro de candidatos: descarta menus, botões gigantes ---
+
+function isOddCandidateValid(element: HTMLElement, ariaLabel: string | null): boolean {
+  // Botões com muitos descendentes geralmente são containers de menu, não odd
+  const descendants = element.querySelectorAll("*").length;
+  if (descendants > MAX_BUTTON_DESCENDANTS) return false;
+
+  // Texto direto não deve ser absurdamente longo
+  const text = element.textContent ?? "";
+  if (text.length > 250) return false;
+
+  // Se tem aria-label, ele precisa parecer com aposta (mencionar "odds", "aposte", "bet", número de odd)
+  if (ariaLabel) {
+    const lower = ariaLabel.toLowerCase();
+    const looksLikeBet =
+      lower.includes("odd") ||
+      lower.includes("cota") ||
+      lower.includes("aposte") ||
+      lower.includes("apostar") ||
+      lower.includes("bet on") ||
+      /\b\d{1,2}[.,]\d{1,3}\b/.test(ariaLabel);
+    if (!looksLikeBet) return false;
+  }
+
+  return true;
+}
+
+// --- Extração principal ---
 
 type OddCandidate = {
   oddValue: number;
-  selection: string | null;
   ariaLabel: string | null;
   card: HTMLElement | null;
   element: HTMLElement;
 };
 
 function extractOddCandidate(element: HTMLElement): OddCandidate | null {
+  const ariaLabel = normalizeText(element.getAttribute("aria-label"));
+
+  if (!isOddCandidateValid(element, ariaLabel)) return null;
+
   const labels = [
     element.getAttribute("data-odds"),
     element.getAttribute("data-odd"),
     element.getAttribute("data-price"),
-    element.getAttribute("aria-label"),
+    ariaLabel,
     element.getAttribute("title"),
     element.textContent
   ].map(normalizeText);
@@ -631,8 +761,7 @@ function extractOddCandidate(element: HTMLElement): OddCandidate | null {
 
   return {
     oddValue,
-    selection: extractSelectionLabel(element),
-    ariaLabel: normalizeText(element.getAttribute("aria-label")),
+    ariaLabel,
     card: findClosest(element, EVENT_CARD_SELECTORS),
     element
   };
@@ -649,6 +778,7 @@ type CaptureStats = {
 function collectFootballOdds(
   doc: Document,
   location: Location,
+  pageContext: PageContext,
   stats: CaptureStats
 ): FootballOddPayload[] {
   const pageSignals = detectPageSignals(doc, location);
@@ -673,24 +803,27 @@ function collectFootballOdds(
     stats.withOdd += 1;
 
     const card = candidate.card;
-    const fromCard = extractEventName(card);
     const fromAria = parseAriaLabel(candidate.ariaLabel);
 
-    const eventName = fromCard.eventName ?? (fromAria.home && fromAria.away ? `${fromAria.home} vs ${fromAria.away}` : null);
-    const homeTeam = fromCard.home ?? fromAria.home;
-    const awayTeam = fromCard.away ?? fromAria.away;
+    // Resolve com fallback em cascata: card → aria-label → contexto da página
+    const eventName =
+      readAttrWithin(card, EVENT_NAME_ATTRS) ??
+      (fromAria.home && fromAria.away ? `${fromAria.home} vs ${fromAria.away}` : null) ??
+      pageContext.eventName;
+
+    const homeTeam = fromAria.home ?? pageContext.homeTeam;
+    const awayTeam = fromAria.away ?? pageContext.awayTeam;
     const market = extractMarket(element, card) ?? fromAria.market;
-    const league = extractLeague(card);
-    const selection = candidate.selection ?? fromAria.selection;
+    const league = extractLeague(card) ?? pageContext.league;
+    const selection = fromAria.selection ?? cleanSelection(candidate.element.textContent);
     const hasOneXTwo = detectOneXTwo(card);
 
-    // Filtro estrito: descartar sem contexto mínimo
+    // Filtro estrito
     if (!eventName || !market) {
       stats.droppedNoContext += 1;
       continue;
     }
 
-    // Score híbrido
     let score = 0;
     if (pageSignals.urlSignal) score += 1;
     if (pageSignals.breadcrumbSignal) score += 1;
@@ -783,6 +916,7 @@ export function collectSnapshotFromPage(
   location: Location
 ): SnapshotPayload {
   const bookmaker = detectBookmaker(location.hostname);
+  const pageContext = extractPageContext(doc, location);
 
   const stats: CaptureStats = {
     rawCandidates: 0,
@@ -792,10 +926,12 @@ export function collectSnapshotFromPage(
     droppedLowScore: 0
   };
 
-  const odds = collectFootballOdds(doc, location, stats);
+  const odds = collectFootballOdds(doc, location, pageContext, stats);
 
   console.info("[oddzone][capture]", {
     bookmaker,
+    pageEvent: pageContext.eventName,
+    pageLeague: pageContext.league,
     rawCandidates: stats.rawCandidates,
     withOdd: stats.withOdd,
     accepted: stats.withFullContext,
