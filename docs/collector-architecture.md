@@ -96,7 +96,22 @@ A lista de palavras-chave e ligas fica em `apps/extension/lib/provider-adapters.
 ### Web
 
 - `apps/web/app/api/collector/ingest/route.ts` — valida token, upserta `ext_users`, insere lotes em `ext_football_odds` e upserta `ext_user_bets`.
+- `apps/web/app/api/odds/live/route.ts` — `GET` server-side com service role. Retorna as 100 odds mais recentes + stats (`totalActiveOdds`, `totalUsers`). Aceita `?limit=N` (máx 200) e `?since=ISO_TIMESTAMP` para fetch incremental.
+- `apps/web/app/page.tsx` — server component que delega o roteamento de tela ao `HomeRouter`.
+- `apps/web/app/components/home-router.tsx` — client component que detecta extensão e alterna entre landing e dashboard.
+- `apps/web/app/components/use-extension-installed.ts` — hook que consulta o bridge `postMessage` exposto pelo content script.
+- `apps/web/app/components/live-odds-dashboard.tsx` — dashboard com polling de 3s, animação de pulse em odd nova, header com status "Ao vivo".
 - `apps/web/app/termos-extensao/page.tsx` — termo público de referência.
+
+## Fluxo da home
+
+1. Visitante abre `oddzone.app`/`oddzone.vercel.app`.
+2. `HomeRouter` (client) chama `useExtensionInstalled` que envia `postMessage` com `type: oddzone:extension-version:request`.
+3. Se o content script da extensão estiver injetado nesse domínio, ele responde com a versão instalada em até 1.5s.
+4. Sem resposta no timeout → mostra a landing (download + tutorial).
+5. Com resposta → monta `<LiveOddsDashboard extensionVersion={...} />`.
+6. Dashboard faz `GET /api/odds/live?limit=100` na montagem, depois `GET /api/odds/live?since=<timestamp>` a cada 3s.
+7. Odds novas são inseridas no topo da lista com animação `is-pulse` (~1.6s).
 
 ### Banco
 

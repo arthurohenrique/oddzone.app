@@ -6,12 +6,14 @@ export default defineConfig({
   manifest: {
     name: "Oddzone Extension",
     description: "Coletor para navegacao em dominios de apostas .bet.br.",
-    version: "0.1.0",
+    version: "0.2.1",
     permissions: ["storage"],
     host_permissions: [
       "https://oddzone.vercel.app/*",
       "https://*.oddzone.app/*",
-      "https://*.bet.br/*"
+      "https://*.bet.br/*",
+      "http://localhost/*",
+      "http://127.0.0.1/*"
     ],
     icons: {
       "16": "/logo-favicon.svg",

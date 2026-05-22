@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-
-const VERSION_REQUEST_TYPE = "oddzone:extension-version:request";
-const VERSION_RESPONSE_TYPE = "oddzone:extension-version:response";
+import { useExtensionInstalled } from "./use-extension-installed";
 
 type LatestPayload = {
   version: string;
@@ -29,79 +27,35 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-async function requestInstalledVersion(timeoutMs = 1200): Promise<string | null> {
-  const requestId = crypto.randomUUID();
-
-  return new Promise((resolve) => {
-    const timeout = window.setTimeout(() => {
-      window.removeEventListener("message", onMessage);
-      resolve(null);
-    }, timeoutMs);
-
-    const onMessage = (event: MessageEvent<unknown>) => {
-      if (event.source !== window) return;
-      if (!event.data || typeof event.data !== "object") return;
-
-      const payload = event.data as {
-        type?: string;
-        requestId?: string;
-        version?: string;
-      };
-
-      if (
-        payload.type !== VERSION_RESPONSE_TYPE ||
-        payload.requestId !== requestId ||
-        typeof payload.version !== "string"
-      ) {
-        return;
-      }
-
-      window.clearTimeout(timeout);
-      window.removeEventListener("message", onMessage);
-      resolve(payload.version);
-    };
-
-    window.addEventListener("message", onMessage);
-    window.postMessage({ type: VERSION_REQUEST_TYPE, requestId }, window.location.origin);
-  });
-}
-
 export function ExtensionVersionNotice({ downloadPath }: ExtensionVersionNoticeProps) {
-  const [installedVersion, setInstalledVersion] = useState<string | null>(null);
+  const detection = useExtensionInstalled();
+  const installedVersion =
+    detection.status === "installed" ? detection.version : null;
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [latestDownloadUrl, setLatestDownloadUrl] = useState<string>(downloadPath);
 
   useEffect(() => {
-    let isCancelled = false;
+    if (!installedVersion) return;
+    let cancelled = false;
 
     void (async () => {
-      const installed = await requestInstalledVersion();
-      if (!installed || isCancelled) return;
-      setInstalledVersion(installed);
-
       try {
-        const response = await fetch("/api/extension/latest", {
-          cache: "no-store"
-        });
+        const response = await fetch("/api/extension/latest", { cache: "no-store" });
         if (!response.ok) return;
         const payload = (await response.json()) as LatestPayload;
-        if (isCancelled) return;
+        if (cancelled) return;
 
-        if (typeof payload.version === "string") {
-          setLatestVersion(payload.version);
-        }
-        if (typeof payload.downloadUrl === "string") {
-          setLatestDownloadUrl(payload.downloadUrl);
-        }
+        if (typeof payload.version === "string") setLatestVersion(payload.version);
+        if (typeof payload.downloadUrl === "string") setLatestDownloadUrl(payload.downloadUrl);
       } catch {
-        // comportamento silencioso quando endpoint indisponivel
+        // silencioso quando endpoint indisponivel
       }
     })();
 
     return () => {
-      isCancelled = true;
+      cancelled = true;
     };
-  }, []);
+  }, [installedVersion]);
 
   const versionStatus = useMemo(() => {
     if (!installedVersion) return "not_detected" as const;

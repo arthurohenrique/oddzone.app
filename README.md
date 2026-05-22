@@ -75,6 +75,27 @@ Fluxo de uso:
 Na landing, as instrucoes detalhadas ficam ocultas por padrao e abrem via botao
 `Como instalar ?`, em modal visual com cenas animadas em codigo.
 
+## Home condicional + dashboard em tempo real
+
+A home (`/`) detecta automaticamente se o visitante tem a extensão Oddzone instalada:
+
+- **Sem extensão**: mostra a landing (CTA de download + tutorial de instalação).
+- **Com extensão**: troca para um dashboard com as últimas 100 odds capturadas em tempo real (polling de 3s).
+
+Detecção via bridge `postMessage` (`oddzone:extension-version:request`/`:response`) que o content script da extensão expõe somente quando o domínio é `oddzone.app`/`oddzone.vercel.app`.
+
+Endpoint de leitura:
+
+- `GET /api/odds/live?limit=100&since=<ISO>` — server-side, usa service role; retorna `{ ok, odds[], stats: { totalActiveOdds, totalUsers }, serverTime }`.
+
+Componentes:
+
+- `apps/web/app/components/home-router.tsx` — alterna landing/dashboard.
+- `apps/web/app/components/use-extension-installed.ts` — hook de detecção.
+- `apps/web/app/components/live-odds-dashboard.tsx` — feed em tempo real, animação de pulse em nova odd, badge "Ao vivo".
+
+Estilo: dark mode (`#000`) com tokens Apple (`--oz-bg`, `--oz-surface`, `--oz-border`, `--oz-text`) e radial gradients sutis. Tudo em `apps/web/app/globals.css` na seção `===== Loading + Dashboard =====`.
+
 ## Modelo de dados (v2 — foco em futebol)
 
 A extensão coleta apenas três grupos de dados objetivos:

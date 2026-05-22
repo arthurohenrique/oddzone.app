@@ -2,6 +2,366 @@
 
 Este documento registra estado atual, decisões e próximos passos para continuidade sem perda de contexto.
 
+## Atualização recente (2026-05-21) — dashboard puro: só as odds
+
+### Pedido
+
+> "o dashboard deve ser limpo, sem titulos, span, contagens de odds ou instalacoes. Deve ser apresentada realmente somente as odds"
+
+### Mudanças
+
+#### `apps/web/app/components/live-odds-dashboard.tsx`
+
+Removidos:
+
+- `<header className="dashboard-header">` inteiro (kicker "Oddzone", `<h1>` título, `<p>` subtítulo).
+- `dashboard-status-cluster` (badge "Ao vivo/Conectando/Sem conexão" + pill da versão).
+- `<section className="dashboard-stats">` com os 3 cards (Odds ativas, Instalações, No feed).
+- Estado `connectionState` (`live | connecting | error`) — substituído por `hasError: boolean` interno, sem badge.
+- Estado vazio simplificado para uma única linha: "Aguardando primeira odd capturada…".
+- Prop `extensionVersion` removida — não é mais necessária.
+
+Mantidos:
+
+- Polling de 3s ao `/api/odds/live`.
+- Dedupe por `id`, fetch incremental via `?since`.
+- Animação `is-pulse` no card recém-chegado.
+- Lista virtual de até 100 odds com cards `<article className="odd-row">`.
+- Tempo relativo (`agora`, `há Ns`, `há N min`, `há Nh`) atualizando 1×/s.
+
+#### `apps/web/app/components/home-router.tsx`
+
+`<LiveOddsDashboard />` sem props.
+
+#### `apps/web/app/api/odds/live/route.ts`
+
+Removida a coleta de `stats: { totalActiveOdds, totalUsers }` (2 queries `count: 'exact'` adicionais por request). Resposta agora é `{ ok, odds, serverTime }`. **Bônus colateral:** cada poll ficou ~3× mais barato (1 query em vez de 3).
+
+#### `apps/web/app/globals.css`
+
+Limpeza grande na seção `===== Loading + Dashboard =====`:
+
+- Removidas todas as classes não-usadas: `.dashboard-header`, `.dashboard-kicker`, `.dashboard-title`, `.dashboard-subtitle`, `.dashboard-status-cluster`, `.dashboard-status[-dot|-live|-error]`, `.dashboard-pill`, `.dashboard-stats`, `.dashboard-stat[-label|-value]`, `@keyframes livePulse`, `.dashboard-empty-hint`, `.dashboard-empty code`.
+- `.dashboard` ganhou padding simétrico (`clamp(20px, 4vw, 48px)` nos 4 lados, em vez de `32px X 80px`) já que o container é agora só a lista.
+- Media query mobile reduzida — sem header pra reorganizar.
+
+### Resultado visual
+
+Tela carrega → fundo preto com gradients sutis → uma única superfície (a lista com border + blur) ocupa a área toda → cards de odds, nada mais. Quando uma odd nova chega, ela aparece no topo com pulse azul de 1.6s.
+
+### Validação
+
+`npm run build:web` — passou. Sem warnings de classes não-usadas (mas vale notar que vários estilos foram removidos, então qualquer regressão fica visualmente óbvia).
+
+## Atualização recente (2026-05-21) — auto-reload das abas oddzone ao instalar/atualizar a extensão
+
+### Pedido
+
+Quando o usuário instala (ou atualiza/recarrega) a extensão, ele tinha que dar F5 manualmente em qualquer aba do oddzone para a página detectar a extensão e trocar para o dashboard. Atrito desnecessário.
+
+### Implementação
+
+No `apps/extension/entrypoints/background.ts`, registrei um listener em `chrome.runtime.onInstalled` que dispara a cada instalação/atualização e:
+
+1. Faz `chrome.tabs.query({ url: ODDZONE_TAB_PATTERNS })` cobrindo:
+   - `https://oddzone.app/*`
+   - `https://*.oddzone.app/*`
+   - `https://oddzone.vercel.app/*`
+   - `http://localhost/*` e `http://localhost:*/*`
+   - `http://127.0.0.1/*` e `http://127.0.0.1:*/*`
+2. Faz `chrome.tabs.reload(tabId, { bypassCache: true })` em todas as abas encontradas, em paralelo via `Promise.allSettled`.
+3. Loga `[oddzone][reload] recarregando abas { reason, count, tabIds }` no service worker.
+
+`onInstalled` dispara em `reason: install | update | chrome_update | shared_module_update`. Todos são bons momentos para recarregar — usuário acabou de instalar/atualizar e quer ver o efeito imediatamente.
+
+Não precisou de permissão `tabs` adicional — `host_permissions` nos domínios oddzone já dá direito de query/reload nas tabs daqueles domínios.
+
+### Por que NÃO `onStartup`
+
+Considerei adicionar `chrome.runtime.onStartup` (dispara quando o Chrome abre) mas seria invasivo: o usuário não escolheu reabrir o navegador para que o oddzone recarregasse. Mantido apenas `onInstalled`.
+
+### Versão
+
+Bump para `0.2.1` em `wxt.config.ts`. Zip regerado em `apps/web/public/downloads/oddzone-extension.zip`.
+
+### Fluxo do usuário agora
+
+1. Baixa zip novo da landing.
+2. `chrome://extensions` → Remover versão antiga → Carregar sem compactação na pasta nova.
+3. **No mesmo instante**, qualquer aba aberta do oddzone recarrega sozinha. Hook detecta extensão. Tela troca para dashboard. Zero cliques.
+
+### Limitação conhecida
+
+Em **dev local** com `npm run dev:web`, o Next faz HMR e a página pode ainda mostrar erro de webpack stale após o reload disparado pela extensão (se houve mudança recente nos client components). O `rm -rf apps/web/.next` continua sendo a saída pra esse caso isolado.
+
+## Atualização recente (2026-05-21) — fix: runtime webpack error + arquitetura server→client
+
+### Sintoma reportado
+
+> "extensao instalada, pagina recarregada e entao gerado erros: Runtime TypeError — __webpack_modules__[moduleId] is not a function (Next.js 15.5.18 Webpack)"
+
+### Causas
+
+1. **Cache `.next` stale** após várias mudanças em client components (`use-extension-installed`, `live-odds-dashboard`, `home-router`, `extension-version-notice`). É a causa #1 desse erro específico no Next 15 com Webpack.
+2. **Padrão de prop não-idiomático** — `HomeRouter` recebia `landing: ReactNode` como prop nomeada e o `page.tsx` passava `<Landing />` (função local definida no mesmo arquivo do `HomePage`, server component). Isso funciona em teoria, mas mistura: função local não-exportada do server component sendo serializada e enviada como prop para um client component. Aumenta a chance do bundler tropeçar (especialmente com cache antigo).
+
+### Correção
+
+#### 1) `apps/web/app/components/home-router.tsx`
+
+Trocada a prop nomeada `landing` por `children`:
+
+```tsx
+type HomeRouterProps = { children: ReactNode };
+export function HomeRouter({ children }: HomeRouterProps) {
+  // ...
+  return <>{children}</>;
+}
+```
+
+`children` é o padrão idiomático Next/React para passar JSX server → client. O RSC trata `children` como boundary natural e serializa apenas o que precisa.
+
+#### 2) `apps/web/app/page.tsx`
+
+Eliminada a função local `Landing()`. O JSX da landing agora fica **inline** dentro do `<HomeRouter>`:
+
+```tsx
+export default function HomePage() {
+  return (
+    <HomeRouter>
+      <main className="home">
+        {/* ... landing inline ... */}
+      </main>
+    </HomeRouter>
+  );
+}
+```
+
+#### 3) Limpar cache
+
+```bash
+rm -rf apps/web/.next
+npm run build:web
+```
+
+### Lição (regra geral para futuras agentes)
+
+- **Server component passando JSX para client component**: sempre via `children`, não via prop nomeada. É o caminho serializado oficialmente pelo RSC.
+- **Não definir funções de componente locais (não exportadas) dentro de server components que serão entregues a client components.** Se precisar reutilizar JSX, ou coloca inline, ou extrai para arquivo próprio.
+- **Erro `__webpack_modules__[moduleId] is not a function` no Next 15**: 90% das vezes é cache stale após refatoração de client/server boundaries. Sempre tentar `rm -rf .next` antes de procurar bug real.
+
+## Atualização recente (2026-05-21) — fix de design: loading spinner + texto alinhados
+
+### Erro reportado pelo usuário
+
+> "no loading do site para verificar a extensao, o spinner aparece bem distante do texto 'verificando extensao', este tipo de erros de design nao devem ocorrer"
+
+### Causa
+
+Em `apps/web/app/globals.css`, `.home-loading` foi escrito com `display: grid; place-items: center; gap: 12px;`. Isso coloca **cada filho do grid em sua própria célula**, ou seja, spinner e `<span>` ficavam empilhados (ou afastados) em vez de lado-a-lado. O seletor `.home-loading > *` aplicava `inline-flex` em cada filho individualmente, mas isso não junta filhos do grid.
+
+### Correção
+
+Trocar para flex direto:
+
+```css
+.home-loading {
+  min-height: 100vh;
+  background: var(--oz-bg);
+  color: var(--oz-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+```
+
+E remover o seletor `.home-loading > *` (era um band-aid que não funcionava). Adicionar `flex-shrink: 0` no spinner para não deformar.
+
+### Lição (regra geral para futuras agentes)
+
+- **Quando o objetivo é "ícone + texto na mesma linha", use sempre flex**, não grid. Grid empilha por padrão; flex alinha lado-a-lado por padrão.
+- **Não use seletores `> *` para tentar consertar layout do container** — quase sempre indica que o display do pai está errado.
+- **Antes de marcar UI como "pronta", visualize ou pelo menos releia o CSS contra o JSX** — não confiar só em "compilou".
+
+## Atualização recente (2026-05-21) — fix: detecção da extensão em localhost + bridge robusto
+
+### Sintoma reportado
+
+"Detecção de extensão instalado não ocorrendo bem." Usuário testando em **dev local** (`localhost`).
+
+### Causas identificadas
+
+1. **`isOddzoneSite` não incluía `localhost`/`127.0.0.1`** — o bridge `setupVersionBridge` só ativava em `oddzone.app`/`oddzone.vercel.app`. Em dev local, o content script é injetado (matches `<all_urls>`) mas sai sem registrar o listener nem responder.
+2. **Race condition silenciosa** — content scripts rodam em `document_idle` por padrão. O `useEffect` do `HomeRouter` pode chamar `postMessage(request)` **antes** do content script registrar seu listener. Como o hook fazia uma única tentativa com timeout curto, qualquer race deixava a tela errada (landing) para sempre.
+3. **Sem logs** — nada no console indicava se o content script estava sendo injetado, se o listener estava registrado, ou se a request saiu.
+
+### Correção implementada
+
+#### 1) `apps/extension/entrypoints/content.ts`
+
+- `isOddzoneSite` aceita também `localhost` e `127.0.0.1` (para dev local).
+- Novo tipo de mensagem `VERSION_ANNOUNCE_TYPE = "oddzone:extension-version:announce"`.
+- `setupVersionBridge` agora:
+  - loga `[oddzone][bridge] ativo { version, origin }` no console da página assim que registra.
+  - continua respondendo a `request` (compatibilidade com clientes antigos).
+  - **anuncia-se proativamente** disparando `announce` em `0ms, 200ms, 600ms, 1500ms, 3000ms` após o carregamento. Resolve a race: mesmo que o hook não esteja escutando ainda, os announces tardios garantem que o listener registrado captura.
+
+#### 2) `apps/web/app/components/use-extension-installed.ts`
+
+Reescrito para ser tolerante a race:
+
+- Listener `message` é registrado **antes** de qualquer envio e fica ativo até resolver.
+- Aceita tanto `response` (resposta a `request` específica) quanto `announce` (broadcast da extensão) — qualquer um resolve.
+- Envia `request` 6 vezes (`0ms, 50ms, 250ms, 600ms, 1200ms, 2400ms`) para forçar resposta caso o announce inicial tenha sido perdido.
+- Timeout final em `4000ms` para declarar `missing` (antes era 1200ms).
+- Logs: `[oddzone][detect] extensão detectada { version }` ou `[oddzone][detect] extensão não detectada após timeout`.
+
+#### 3) `apps/extension/wxt.config.ts`
+
+- Versão bumpada de `0.1.0` para `0.2.0`.
+- `host_permissions` ganha `http://localhost/*` e `http://127.0.0.1/*` para permitir injection em dev local.
+
+#### 4) `apps/web/app/components/extension-version-notice.tsx`
+
+- Refatorado para consumir `useExtensionInstalled` (em vez de duplicar a lógica de bridge). Mantém comparação semver + CTA de download quando desatualizada.
+
+### Como validar agora
+
+**Em dev local** (`npm run dev:web` em `localhost:3000`):
+
+1. Recarregar extensão no `chrome://extensions` — selecionar a pasta `.output/chrome-mv3` mais recente (ou descompactar `apps/web/public/downloads/oddzone-extension.zip`).
+2. Acessar `http://localhost:3000`.
+3. **Abrir DevTools (Console)** — deve aparecer:
+   - `[oddzone][bridge] ativo { version: "0.2.0", origin: "http://localhost:3000" }` (do content script)
+   - `[oddzone][detect] extensão detectada { version: "0.2.0" }` (do hook)
+4. Tela troca de landing para dashboard em ~50–600ms.
+
+**Em produção** (`oddzone.vercel.app`):
+
+1. Baixar o novo zip (`oddzone-extension.zip` agora é v0.2.0).
+2. Em `chrome://extensions`, **Remover** a extensão antiga e **Carregar sem compactação** a pasta nova.
+3. Recarregar `oddzone.vercel.app`.
+4. Mesmo log no console + troca para dashboard.
+
+### Diagnóstico se ainda não funcionar
+
+Pergunte ao usuário sobre cada bloco e onde para:
+
+1. **`[oddzone][bridge] ativo` aparece no console?**
+   - Não → content script não foi injetado. Pode ser: extensão não carregada, `host_permissions` ainda sem o domínio, ou o usuário está numa versão antiga (< 0.2.0). Conferir `chrome://extensions` → "Inspecionar visualizações" → mostrar service worker.
+   - Sim → próximo passo.
+2. **`[oddzone][detect] extensão detectada` aparece?**
+   - Não → o `postMessage` da bridge não está chegando no listener. Improvável após o announce proativo, mas pode acontecer se a página tem CSP estrito que bloqueia `window.postMessage`. Conferir Network/Console por erros de CSP.
+   - Sim → tela deveria ter trocado. Conferir se o componente `HomeRouter` está sendo usado em `apps/web/app/page.tsx`.
+
+### Arquivos finais
+
+- `apps/extension/entrypoints/content.ts` (bridge robusto)
+- `apps/extension/wxt.config.ts` (v0.2.0 + localhost)
+- `apps/web/app/components/use-extension-installed.ts` (hook com retry)
+- `apps/web/app/components/extension-version-notice.tsx` (consome o hook)
+- `apps/web/public/downloads/oddzone-extension.zip` (v0.2.0, regerado)
+
+## Atualização recente (2026-05-21) — home condicional + dashboard de odds em tempo real
+
+### Contexto
+
+Usuário pediu: detectar se a pessoa que acessa o site **já tem a extensão instalada** e, em caso positivo, trocar a tela por um **dashboard de odds capturadas em tempo real**. Manter design clean Apple, dark mode total (`background: #000`).
+
+### Decisões tomadas nesta rodada (confirmadas com o usuário via AskUserQuestion)
+
+1. **Acesso ao realtime via API server-side + polling** (não Supabase Realtime no browser). Browser nunca fala com Supabase direto; backend usa service role. Mantém segurança da v2 (RLS sem policy, anon-key não tem acesso a `ext_*`).
+2. **Feed global agregado** (não filtrado por `install_id`). Mostra odds de todas as instalações ativas.
+3. **Lista de ~100 últimas, mais recentes primeiro** (não agrupado por evento). Polling de 3s, incremento via parâmetro `since`.
+
+### Arquivos alterados nesta rodada
+
+#### 1) `apps/web/app/api/odds/live/route.ts` (novo)
+
+- `GET /api/odds/live?limit=N&since=ISO_TIMESTAMP`.
+- Usa `getSupabaseServerClient` (service role) — mesmo cliente usado pelo `/api/collector/ingest`.
+- Retorna `{ ok, odds: OddRow[], stats: { totalActiveOdds, totalUsers }, serverTime }`.
+- `limit` default 100, máximo 200. `since` é opcional para fetch incremental.
+- Headers `Cache-Control: no-store` + `export const dynamic = "force-dynamic"`.
+- Falha local apenas se `.env.local` não tiver `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SECRET_KEY` (em produção Vercel as variáveis já estão configuradas).
+
+#### 2) `apps/web/app/components/use-extension-installed.ts` (novo)
+
+- Hook `useExtensionInstalled(timeoutMs = 1500)` extraído da lógica que já existia em `extension-version-notice.tsx`.
+- Retorna estado discriminado: `{ status: "checking" | "installed" | "missing", version: string | null }`.
+- Usa o bridge `postMessage` (tipos `oddzone:extension-version:request`/`:response`) que o content script da extensão expõe quando a página é `oddzone.app`/`oddzone.vercel.app` (definido em `apps/extension/entrypoints/content.ts` na função `setupVersionBridge`).
+- Timeout dispara `status: "missing"` — sem extensão, sem bridge, sem resposta em 1.5s.
+
+#### 3) `apps/web/app/components/live-odds-dashboard.tsx` (novo)
+
+- Client component com polling de `POLL_INTERVAL_MS = 3000` ao `/api/odds/live`.
+- Primeira chamada busca as 100 mais recentes; subsequentes usam `?since=<captured_at do topo>` para só trazer novas.
+- Estado `connectionState` (`connecting` | `live` | `error`) reflete saúde do polling, com badge no header.
+- Animação `is-pulse` no card recém-chegado (1.6s) para feedback visual de "nova odd".
+- Display: card do bookmaker + liga (esquerda), `home_team vs away_team` ou `event_name` + mercado/seleção (centro), `odd_value` formatado + tempo relativo (direita). Tempo relativo recalcula 1×/s via tick local.
+- Stats no topo: `Odds ativas`, `Instalações`, `No feed`.
+- Estado vazio amigável quando ainda não chegou nada.
+
+#### 4) `apps/web/app/components/home-router.tsx` (novo)
+
+- Server-friendly: aceita `landing: ReactNode` como prop (passado pelo server component).
+- Roteamento client-side baseado em `useExtensionInstalled`:
+  - `checking` → loading minimalista (spinner + "Verificando extensão…").
+  - `installed` → `<LiveOddsDashboard extensionVersion={version} />`.
+  - `missing` → renderiza o `landing` recebido por prop.
+
+#### 5) `apps/web/app/page.tsx`
+
+- Refatorada: componente `Landing()` interno + `<HomeRouter landing={<Landing />} />`.
+- A landing original (CTA de download + `ExtensionVersionNotice` + `InstallationGuideModal`) só renderiza para visitantes **sem** a extensão.
+
+#### 6) `apps/web/app/globals.css`
+
+Adicionada seção `===== Loading + Dashboard =====` com tokens reaproveitados (`--oz-bg`, `--oz-surface`, `--oz-border`, `--oz-text`, `--oz-muted`):
+
+- `.home-loading` + `.home-loading-spinner` (spinner `0.85s linear`).
+- `.dashboard` com radial gradient azul sutil no topo-esquerda e branco no canto inferior-direito sobre `#000`.
+- `.dashboard-header`, `.dashboard-kicker`, `.dashboard-title` (clamp 24–36px), `.dashboard-subtitle`.
+- `.dashboard-status-cluster` + `.dashboard-status[-live|-error]` com ponto pulsante (`@keyframes livePulse`) e pill de versão.
+- `.dashboard-stats` (grid auto-fit minmax(180px, 1fr)) com 3 cards de métricas.
+- `.dashboard-list` (container com border + blur) + `.dashboard-empty` (com variante `is-error`).
+- `.odd-row` (grid 3 colunas), `.odd-row-bookmaker`, `.odd-row-league`, `.odd-row-event`, `.odd-row-meta`, `.odd-row-value` (font tabular, 18px), `.odd-row-time`.
+- `@keyframes oddRowPulse` (background azul → transparente, 1.6s) aplicado via `.is-pulse`.
+- Media query mobile: header empilha, `.odd-row` vira grid 2 colunas com `grid-template-areas`.
+
+### Validações executadas
+
+- `npm run build:web` ok — nova rota `/api/odds/live` aparece em `ƒ` (dinâmica).
+- `next dev` + `curl /api/odds/live?limit=5` em local: 500 com mensagem clara `Variáveis NEXT_PUBLIC_SUPABASE_URL e SUPABASE_SECRET_KEY são obrigatórias` (esperado sem `.env.local`; produção Vercel tem as vars).
+- Roteamento condicional: bridge `postMessage` do content script já está implementado e testado pelo `ExtensionVersionNotice` há semanas — reaproveitamento direto.
+
+### Como validar em ambiente real
+
+1. Acessar `oddzone.vercel.app` **sem** extensão instalada → vê a landing original.
+2. Instalar extensão (`npm run release:extension` → zip → carregar unpacked).
+3. Recarregar `oddzone.vercel.app` → após ~1s, troca para o dashboard.
+4. Em outra aba, abrir uma casa `.bet.br` com odds de futebol → snapshots começam a chegar no banco.
+5. Voltar para `oddzone.vercel.app` → odds aparecem no feed; cards novos pulsam azul; "Ao vivo" no header.
+
+### Limitações remanescentes
+
+- Polling de 3s; latência percebida pode chegar a 3s. Migrar para SSE quando justificar.
+- Sem filtros (por bookmaker, liga, mercado). Trivial adicionar via querystring + UI.
+- Sem paginação além de 100 — odds antigas saem do feed silenciosamente.
+- Não há autenticação no `/api/odds/live` — qualquer um com URL pode bater. Como o conteúdo é odds anônimas e voláteis (TTL 1h), o risco é baixo, mas se ficar caro pode-se exigir um token público + rate limit.
+- O dashboard mostra a tela completa: se o usuário quiser voltar à landing ou reinstalar a extensão, não há link visível. Adicionar um menu/header secundário em rodada futura.
+
+### Prioridade recomendada para próxima rodada
+
+1. Filtros no dashboard: bookmaker, liga, mercado.
+2. Migrar polling para SSE (Server-Sent Events) para reduzir requests e latência.
+3. Visualização "agrupada por evento" como segunda aba/modo.
+4. Menu de usuário simples no header (logout/limpar consentimento, link para reinstalar).
+5. Rate limit + `Cache-Control: s-maxage=1, stale-while-revalidate` na rota.
+
 ## Atualização recente (2026-05-21) — reset v2: foco em futebol + 3 tabelas
 
 ### Contexto

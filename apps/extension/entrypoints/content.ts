@@ -4,6 +4,7 @@ import type { ConsentState, SnapshotPayload } from "../lib/collector-types";
 
 const VERSION_REQUEST_TYPE = "oddzone:extension-version:request";
 const VERSION_RESPONSE_TYPE = "oddzone:extension-version:response";
+const VERSION_ANNOUNCE_TYPE = "oddzone:extension-version:announce";
 
 async function sendToBackground<T>(message: unknown): Promise<T> {
   return chrome.runtime.sendMessage(message) as Promise<T>;
@@ -70,11 +71,23 @@ function isOddzoneSite(hostname: string): boolean {
   return (
     hostname === "oddzone.app" ||
     hostname.endsWith(".oddzone.app") ||
-    hostname === "oddzone.vercel.app"
+    hostname === "oddzone.vercel.app" ||
+    hostname === "localhost" ||
+    hostname === "127.0.0.1"
   );
 }
 
 function setupVersionBridge() {
+  const version = chrome.runtime.getManifest().version;
+  console.info("[oddzone][bridge] ativo", { version, origin: window.location.origin });
+
+  const announce = () => {
+    window.postMessage(
+      { type: VERSION_ANNOUNCE_TYPE, version },
+      window.location.origin
+    );
+  };
+
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (event.source !== window) return;
     if (!event.data || typeof event.data !== "object") return;
@@ -86,11 +99,19 @@ function setupVersionBridge() {
       {
         type: VERSION_RESPONSE_TYPE,
         requestId: payload.requestId ?? null,
-        version: chrome.runtime.getManifest().version
+        version
       },
       window.location.origin
     );
   });
+
+  // Anuncia proativamente algumas vezes nos primeiros segundos
+  // para cobrir o caso do content script carregar depois do React.
+  announce();
+  const delays = [200, 600, 1500, 3000];
+  for (const ms of delays) {
+    window.setTimeout(announce, ms);
+  }
 }
 
 export default defineContentScript({
