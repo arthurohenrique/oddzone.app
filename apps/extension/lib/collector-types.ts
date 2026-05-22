@@ -1,11 +1,4 @@
-export type CollectorEventType =
-  | "extension_lifecycle"
-  | "consent_accepted"
-  | "page_seen"
-  | "snapshot"
-  | "collector_failure";
-
-export type ExtensionLifecycleType = "startup" | "install";
+export type CollectorEventType = "consent_accepted" | "snapshot";
 
 export type ConsentState = {
   accepted: boolean;
@@ -15,55 +8,51 @@ export type ConsentState = {
 };
 
 export type AccountProfilePayload = {
-  username: string | null;
+  email: string | null;
+  displayName: string | null;
   balanceCents: number | null;
-  balanceCurrency: string | null;
-  rawPayload: Record<string, unknown>;
+  currency: string | null;
 };
 
-export type BetPayload = {
+export type FootballOddPayload = {
+  league: string | null;
+  eventName: string | null;
+  homeTeam: string | null;
+  awayTeam: string | null;
+  market: string | null;
+  selection: string | null;
+  oddValue: number;
+  confidenceScore: number;
+};
+
+export type UserBetPayload = {
   betslipId: string | null;
+  league: string | null;
+  eventName: string | null;
   market: string | null;
   selection: string | null;
   stakeCents: number | null;
   oddValue: number | null;
+  potentialReturnCents: number | null;
   status: string | null;
   placedAt: string | null;
-  rawPayload: Record<string, unknown>;
-};
-
-export type OddsPayload = {
-  eventName: string | null;
-  market: string | null;
-  selection: string | null;
-  oddValue: number | null;
-  rawPayload: Record<string, unknown>;
 };
 
 export type SnapshotPayload = {
-  providerSlug: string;
-  pageTitle: string;
+  bookmaker: string;
   pageUrl: string;
-  accountProfile: AccountProfilePayload | null;
-  bets: BetPayload[];
-  odds: OddsPayload[];
-  rawPayload: Record<string, unknown>;
+  account: AccountProfilePayload | null;
+  odds: FootballOddPayload[];
+  bets: UserBetPayload[];
 };
 
 export type CollectorIngestPayload = {
   eventType: CollectorEventType;
   installationId: string;
   extensionVersion: string;
-  siteDomain: string | null;
-  sourceUrl: string | null;
+  bookmaker: string;
+  pageUrl: string | null;
   capturedAt: string;
   consent: ConsentState;
-  lifecycleEventType?: ExtensionLifecycleType;
-  termVersion?: string;
-  termHash?: string;
-  pageTitle?: string;
   snapshot?: SnapshotPayload;
-  failureCode?: string;
-  failureMessage?: string;
-  failurePayload?: Record<string, unknown>;
 };

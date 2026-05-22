@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { getSupabaseServerClient } from "../../../../lib/supabase/server";
 
 type IngestBody = {
-  eventType?: string;
+  eventType?: "consent_accepted" | "snapshot";
   installationId?: string;
   extensionVersion?: string;
-  siteDomain?: string | null;
-  sourceUrl?: string | null;
+  bookmaker?: string;
+  pageUrl?: string | null;
   capturedAt?: string;
   consent?: {
     accepted?: boolean;
@@ -14,48 +14,45 @@ type IngestBody = {
     termVersion?: string;
     termHash?: string;
   };
-  lifecycleEventType?: "startup" | "install";
-  termVersion?: string;
-  termHash?: string;
-  pageTitle?: string;
   snapshot?: {
-    providerSlug?: string;
-    pageTitle?: string;
+    bookmaker?: string;
     pageUrl?: string;
-    accountProfile?: {
-      username?: string | null;
+    account?: {
+      email?: string | null;
+      displayName?: string | null;
       balanceCents?: number | null;
-      balanceCurrency?: string | null;
-      rawPayload?: Record<string, unknown>;
+      currency?: string | null;
     } | null;
+    odds?: Array<{
+      league?: string | null;
+      eventName?: string | null;
+      homeTeam?: string | null;
+      awayTeam?: string | null;
+      market?: string | null;
+      selection?: string | null;
+      oddValue?: number;
+      confidenceScore?: number;
+    }>;
     bets?: Array<{
       betslipId?: string | null;
+      league?: string | null;
+      eventName?: string | null;
       market?: string | null;
       selection?: string | null;
       stakeCents?: number | null;
       oddValue?: number | null;
+      potentialReturnCents?: number | null;
       status?: string | null;
       placedAt?: string | null;
-      rawPayload?: Record<string, unknown>;
     }>;
-    odds?: Array<{
-      eventName?: string | null;
-      market?: string | null;
-      selection?: string | null;
-      oddValue?: number | null;
-      rawPayload?: Record<string, unknown>;
-    }>;
-    rawPayload?: Record<string, unknown>;
   };
-  failureCode?: string;
-  failureMessage?: string;
-  failurePayload?: Record<string, unknown>;
 };
 
 type ValidatedIngestBody = IngestBody & {
-  eventType: string;
+  eventType: "consent_accepted" | "snapshot";
   installationId: string;
   extensionVersion: string;
+  bookmaker: string;
   capturedAt: string;
   consent: {
     accepted: boolean;
@@ -65,13 +62,7 @@ type ValidatedIngestBody = IngestBody & {
   };
 };
 
-const allowedEventTypes = new Set([
-  "extension_lifecycle",
-  "consent_accepted",
-  "page_seen",
-  "snapshot",
-  "collector_failure"
-]);
+const allowedEventTypes = new Set(["consent_accepted", "snapshot"]);
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -87,6 +78,9 @@ function assertBody(body: IngestBody): asserts body is ValidatedIngestBody {
   if (!isNonEmptyString(body.extensionVersion)) {
     throw new Error("extensionVersion obrigatorio");
   }
+  if (!isNonEmptyString(body.bookmaker)) {
+    throw new Error("bookmaker obrigatorio");
+  }
   if (!isNonEmptyString(body.capturedAt)) {
     throw new Error("capturedAt obrigatorio");
   }
@@ -95,152 +89,113 @@ function assertBody(body: IngestBody): asserts body is ValidatedIngestBody {
   }
 }
 
-async function upsertInstallation(
-  supabaseServer: ReturnType<typeof getSupabaseServerClient>,
-  installationId: string,
-  extensionVersion: string,
-  capturedAt: string
-) {
-  const { error } = await supabaseServer.from("collector_installations").upsert(
-    {
-      installation_id: installationId,
-      latest_extension_version: extensionVersion,
-      first_seen_at: capturedAt,
-      last_seen_at: capturedAt
-    },
-    { onConflict: "installation_id" }
-  );
-
-  if (error) throw error;
-}
-
-async function insertLifecycle(
+async function upsertUser(
   supabaseServer: ReturnType<typeof getSupabaseServerClient>,
   body: ValidatedIngestBody
 ) {
-  const { error } = await supabaseServer.from("extension_events").insert({
-    event_type: body.lifecycleEventType ?? "startup",
+  const account = body.snapshot?.account ?? null;
+
+  const row: Record<string, unknown> = {
+    install_id: body.installationId,
+    bookmaker: body.bookmaker,
     extension_version: body.extensionVersion,
-    latest_known_version: null,
-    update_available: null
-  });
+    last_seen_at: body.capturedAt,
+    updated_at: body.capturedAt
+  };
+
+  if (body.consent.accepted) {
+    row.consent_accepted_at = body.consent.acceptedAt ?? body.capturedAt;
+    row.consent_term_version = body.consent.termVersion ?? null;
+  }
+
+  if (account) {
+    if (account.email !== undefined) row.email = account.email;
+    if (account.displayName !== undefined) row.display_name = account.displayName;
+    if (account.balanceCents !== undefined) row.balance_cents = account.balanceCents;
+    if (account.currency !== undefined) row.currency = account.currency;
+  }
+
+  const { error } = await supabaseServer
+    .from("ext_users")
+    .upsert(row, { onConflict: "install_id" });
 
   if (error) throw error;
 }
 
-async function insertConsent(
+async function insertOdds(
   supabaseServer: ReturnType<typeof getSupabaseServerClient>,
   body: ValidatedIngestBody
 ) {
-  const { error } = await supabaseServer.from("user_consents").insert({
-    installation_id: body.installationId,
-    term_version: body.termVersion ?? body.consent.termVersion ?? "unknown",
-    term_hash: body.termHash ?? body.consent.termHash ?? null,
-    accepted_at: body.consent.acceptedAt ?? body.capturedAt,
-    source_url: body.sourceUrl ?? null,
-    statement:
-      "Usuário aceitou termo único para coleta de dados de domínios .bet.br."
-  });
+  const odds = body.snapshot?.odds ?? [];
+  if (odds.length === 0) return 0;
 
+  const rows = odds
+    .filter((odd) => typeof odd.oddValue === "number" && odd.oddValue >= 1.01)
+    .map((odd) => ({
+      install_id: body.installationId,
+      bookmaker: body.bookmaker,
+      league: odd.league ?? null,
+      event_name: odd.eventName ?? null,
+      home_team: odd.homeTeam ?? null,
+      away_team: odd.awayTeam ?? null,
+      market: odd.market ?? null,
+      selection: odd.selection ?? null,
+      odd_value: odd.oddValue,
+      confidence_score: odd.confidenceScore ?? 0,
+      page_url: body.pageUrl ?? null,
+      captured_at: body.capturedAt
+    }));
+
+  if (rows.length === 0) return 0;
+
+  const { error } = await supabaseServer.from("ext_football_odds").insert(rows);
   if (error) throw error;
+  return rows.length;
 }
 
-async function insertPageSeen(
+async function upsertBets(
   supabaseServer: ReturnType<typeof getSupabaseServerClient>,
   body: ValidatedIngestBody
 ) {
-  const { error } = await supabaseServer.from("site_sessions").insert({
-    installation_id: body.installationId,
-    site_domain: body.siteDomain ?? "unknown.bet.br",
-    page_url: body.sourceUrl ?? null,
-    page_title: body.pageTitle ?? null,
-    visited_at: body.capturedAt
+  const bets = body.snapshot?.bets ?? [];
+  if (bets.length === 0) return 0;
+
+  const withBetslip = bets.filter((bet) => isNonEmptyString(bet.betslipId));
+  const withoutBetslip = bets.filter((bet) => !isNonEmptyString(bet.betslipId));
+
+  const baseRow = (bet: (typeof bets)[number]) => ({
+    install_id: body.installationId,
+    bookmaker: body.bookmaker,
+    betslip_id: bet.betslipId ?? null,
+    league: bet.league ?? null,
+    event_name: bet.eventName ?? null,
+    market: bet.market ?? null,
+    selection: bet.selection ?? null,
+    stake_cents: bet.stakeCents ?? null,
+    odd_value: bet.oddValue ?? null,
+    potential_return_cents: bet.potentialReturnCents ?? null,
+    status: bet.status ?? null,
+    placed_at: bet.placedAt ?? null,
+    captured_at: body.capturedAt
   });
 
-  if (error) throw error;
-}
-
-async function insertSnapshot(
-  supabaseServer: ReturnType<typeof getSupabaseServerClient>,
-  body: ValidatedIngestBody
-) {
-  if (!body.snapshot) return;
-
-  if (body.snapshot.accountProfile) {
-    const { error: accountError } = await supabaseServer
-      .from("account_profiles")
-      .insert({
-        installation_id: body.installationId,
-        site_domain: body.siteDomain ?? "unknown.bet.br",
-        captured_at: body.capturedAt,
-        username: body.snapshot.accountProfile.username ?? null,
-        balance_cents: body.snapshot.accountProfile.balanceCents ?? null,
-        balance_currency: body.snapshot.accountProfile.balanceCurrency ?? null,
-        raw_payload: body.snapshot.accountProfile.rawPayload ?? {}
+  if (withBetslip.length > 0) {
+    const { error } = await supabaseServer
+      .from("ext_user_bets")
+      .upsert(withBetslip.map(baseRow), {
+        onConflict: "install_id,bookmaker,betslip_id"
       });
-
-    if (accountError) throw accountError;
+    if (error) throw error;
   }
 
-  if (Array.isArray(body.snapshot.bets) && body.snapshot.bets.length > 0) {
-    const { error: betsError } = await supabaseServer.from("bets").insert(
-      body.snapshot.bets.map((bet) => ({
-        installation_id: body.installationId,
-        site_domain: body.siteDomain ?? "unknown.bet.br",
-        captured_at: body.capturedAt,
-        betslip_id: bet.betslipId ?? null,
-        market: bet.market ?? null,
-        selection: bet.selection ?? null,
-        stake_cents: bet.stakeCents ?? null,
-        odd_value: bet.oddValue ?? null,
-        status: bet.status ?? null,
-        placed_at: bet.placedAt ?? null,
-        raw_payload: bet.rawPayload ?? {}
-      }))
-    );
-
-    if (betsError) throw betsError;
+  if (withoutBetslip.length > 0) {
+    const { error } = await supabaseServer
+      .from("ext_user_bets")
+      .insert(withoutBetslip.map(baseRow));
+    if (error) throw error;
   }
 
-  if (Array.isArray(body.snapshot.odds) && body.snapshot.odds.length > 0) {
-    const { error: oddsError } = await supabaseServer.from("odds_snapshots").insert(
-      body.snapshot.odds.map((odd) => ({
-        installation_id: body.installationId,
-        site_domain: body.siteDomain ?? "unknown.bet.br",
-        captured_at: body.capturedAt,
-        market: odd.market ?? null,
-        event_name: odd.eventName ?? null,
-        selection: odd.selection ?? null,
-        odd_value: odd.oddValue ?? null,
-        expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-        raw_payload: odd.rawPayload ?? {}
-      }))
-    );
-
-    if (oddsError) throw oddsError;
-  } else {
-    console.warn("[collector_ingest] snapshot sem odds", {
-      installationId: body.installationId,
-      siteDomain: body.siteDomain ?? "unknown.bet.br",
-      sourceUrl: body.sourceUrl ?? null
-    });
-  }
-}
-
-async function insertFailure(
-  supabaseServer: ReturnType<typeof getSupabaseServerClient>,
-  body: ValidatedIngestBody
-) {
-  const { error } = await supabaseServer.from("collector_failures").insert({
-    installation_id: body.installationId,
-    site_domain: body.siteDomain ?? "unknown.bet.br",
-    source_url: body.sourceUrl ?? null,
-    error_code: body.failureCode ?? "UNKNOWN",
-    error_message: body.failureMessage ?? "Falha nao detalhada",
-    raw_payload: body.failurePayload ?? {}
-  });
-
-  if (error) throw error;
+  return bets.length;
 }
 
 export async function POST(request: Request) {
@@ -253,7 +208,7 @@ export async function POST(request: Request) {
     const incomingToken = request.headers.get("x-collector-token");
 
     if (expectedToken && incomingToken !== expectedToken) {
-      console.warn("[collector_ingest] token inválido", {
+      console.warn("[collector_ingest] token invalido", {
         requestId,
         source: request.headers.get("x-collector-source"),
         hasIncomingToken: Boolean(incomingToken)
@@ -263,7 +218,7 @@ export async function POST(request: Request) {
 
     const collectorSource = request.headers.get("x-collector-source");
     if (collectorSource !== "oddzone-extension") {
-      console.warn("[collector_ingest] origem inválida", {
+      console.warn("[collector_ingest] origem invalida", {
         requestId,
         collectorSource
       });
@@ -278,37 +233,33 @@ export async function POST(request: Request) {
       requestId,
       eventType: body.eventType,
       installationId: body.installationId,
-      siteDomain: body.siteDomain ?? "unknown.bet.br",
-      collectorSource,
-      hasIncomingToken: Boolean(incomingToken)
+      bookmaker: body.bookmaker,
+      oddsCount: body.snapshot?.odds?.length ?? 0,
+      betsCount: body.snapshot?.bets?.length ?? 0,
+      hasAccount: Boolean(body.snapshot?.account)
     });
 
-    await upsertInstallation(
-      supabaseServer,
-      body.installationId,
-      body.extensionVersion,
-      body.capturedAt
-    );
+    await upsertUser(supabaseServer, body);
 
-    if (body.eventType === "extension_lifecycle") {
-      await insertLifecycle(supabaseServer, body);
-    } else if (body.eventType === "consent_accepted") {
-      await insertConsent(supabaseServer, body);
-    } else if (body.eventType === "page_seen") {
-      await insertPageSeen(supabaseServer, body);
-    } else if (body.eventType === "snapshot") {
-      await insertSnapshot(supabaseServer, body);
-    } else if (body.eventType === "collector_failure") {
-      await insertFailure(supabaseServer, body);
+    let oddsInserted = 0;
+    let betsInserted = 0;
+    if (body.eventType === "snapshot") {
+      oddsInserted = await insertOdds(supabaseServer, body);
+      betsInserted = await upsertBets(supabaseServer, body);
     }
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({
+      ok: true,
+      requestId,
+      oddsInserted,
+      betsInserted
+    });
   } catch (error) {
-    console.error("[collector_ingest] erro durante ingestão", {
+    console.error("[collector_ingest] erro durante ingestao", {
       requestId,
       eventType: parsedBody?.eventType ?? "unknown",
       installationId: parsedBody?.installationId ?? "unknown",
-      siteDomain: parsedBody?.siteDomain ?? "unknown.bet.br",
+      bookmaker: parsedBody?.bookmaker ?? "unknown",
       error: error instanceof Error ? error.message : "Erro interno"
     });
 

@@ -75,45 +75,44 @@ Fluxo de uso:
 Na landing, as instrucoes detalhadas ficam ocultas por padrao e abrem via botao
 `Como instalar ?`, em modal visual com cenas animadas em codigo.
 
-## Troubleshooting rápido (ingestão de odds)
+## Modelo de dados (v2 — foco em futebol)
 
-Se as odds não estiverem chegando no banco, valide nesta ordem:
+A extensão coleta apenas três grupos de dados objetivos:
 
-1. **Service worker da extensão (Network)**
-   - request `POST /api/collector/ingest` precisa retornar `200`.
-   - se aparecer `ERR_CONNECTION_REFUSED`, a URL de ingestão está indisponível.
-2. **URL de ingestão no build da extensão**
-   - produção usa por padrão: `https://oddzone.vercel.app/api/collector/ingest`.
-   - valores locais (`localhost`/`127.0.0.1`) são ignorados no build final.
-3. **Token compartilhado**
-   - `COLLECTOR_EXTENSION_SHARED_TOKEN` (web) deve ser igual ao `WXT_PUBLIC_COLLECTOR_SHARED_TOKEN` (extensão).
-4. **Sequência de tabelas no Supabase**
-   - conferir `collector_installations` -> `site_sessions` -> `odds_snapshots`.
-5. **Snapshots sem odds**
-   - se `snapshot.odds` vier vazio no payload, não haverá insert em `odds_snapshots`.
-6. **TTL de odds**
-   - `odds_snapshots` expira em 1 hora e é limpo pelo `pg_cron` a cada 5 minutos.
+1. **Usuário da casa** (`ext_users`): instalação + email, nome, saldo, moeda, consentimento.
+2. **Odds de futebol** (`ext_football_odds`): toda odd visível classificada como futebol via score híbrido (URL + breadcrumb + assinatura de mercado + 1X2 + liga). TTL 1h.
+3. **Apostas do usuário** (`ext_user_bets`): histórico de apostas exibido em tela (stake, odd, retorno potencial, status).
 
-## Diagnóstico rápido (produção / connection refused)
+Eventos enviados pela extensão: `consent_accepted`, `snapshot`. Toda persistência usa uma única chamada por snapshot que atualiza `ext_users` (upsert) e insere `ext_football_odds` + `ext_user_bets`.
 
-Quando ocorrer `ERR_CONNECTION_REFUSED`, siga em blocos:
+## Filtro híbrido de futebol
 
-1. **Extensão (service worker)**
-   - procurar logs:
-     - `[oddzone][background] iniciado`
-     - `[oddzone][ingest] precheck ...`
-     - `[oddzone][ingest] envio iniciado`
-     - `[oddzone][ingest] erro de rede` ou `[oddzone][ingest] erro http`
-   - confirmar URL alvo em todos os logs.
-2. **API (Vercel)**
-   - buscar logs por `requestId` no prefixo `[collector_ingest]`.
-   - validar se evento chegou e com quais headers (`x-collector-source`, token).
-3. **Banco (Supabase)**
-   - se API recebeu e respondeu `ok`, validar inserts por tipo:
-     - `collector_installations` (sempre),
-     - `site_sessions` (page_seen),
-     - `account_profiles` / `bets` / `odds_snapshots` (snapshot),
-     - `collector_failures` (collector_failure).
+Cada odd capturada recebe um `confidence_score` (0 a 9). Só entra no banco se `score >= 2`:
+
+- +1 URL contém `futebol`/`soccer`/`football`
+- +1 breadcrumb/menu ativo com palavras de futebol
+- +1 título da página com palavras de futebol
+- +2 mercado exclusivo (BTTS, escanteios, cartões, handicap asiático, dupla chance, etc.)
+- +2 card com 3 opções 1/X/2 (mercado 1X2)
+- +1 liga reconhecida (Brasileirão, Libertadores, Premier League, La Liga, etc.)
+- +1 nome do evento no formato `Time A vs Time B`
+
+## Troubleshooting rápido (ingestão)
+
+Se nada chegar no banco, valide nesta ordem:
+
+1. **Service worker da extensão (Network)** — `POST /api/collector/ingest` deve retornar `200`.
+2. **URL de ingestão** — produção: `https://oddzone.vercel.app/api/collector/ingest`.
+3. **Token compartilhado** — `COLLECTOR_EXTENSION_SHARED_TOKEN` (web) = `WXT_PUBLIC_COLLECTOR_SHARED_TOKEN` (extensão).
+4. **Tabelas no Supabase** — `ext_users` (sempre), `ext_football_odds` + `ext_user_bets` (em snapshots).
+5. **Snapshot sem odds** — provavelmente a página não passou no score de futebol (≥2). Verificar `confidence_score` médio dos snapshots recentes.
+6. **TTL** — `ext_football_odds` expira em 1h via `expires_at`, limpo por `pg_cron` a cada 5 min.
+
+## Diagnóstico rápido (logs)
+
+1. **Extensão (service worker)** — procurar `[oddzone][background] iniciado`, `[oddzone][ingest] envio iniciado/concluido/erro`.
+2. **API (Vercel)** — logs com prefixo `[collector_ingest]` e `requestId`.
+3. **Banco (Supabase)** — `select count(*) from ext_football_odds where captured_at > now() - interval '5 min'`.
 
 ## Atualização do arquivo da extensão
 
@@ -161,16 +160,15 @@ Observações:
 
 ## Banco de dados e retenção
 
-Migrações:
+Migração ativa:
 
-- `supabase/migrations/20260515153000_init_extension_events.sql`
-- `supabase/migrations/20260515181000_collector_data_model.sql`
+- `supabase/migrations/20260521210000_collector_reset_v2.sql` — dropa modelo antigo e cria as 3 tabelas (`ext_users`, `ext_football_odds`, `ext_user_bets`).
 
-Regras atuais:
+Regras:
 
-- `odds_snapshots`: TTL de 1 hora via `expires_at`.
-- Job `pg_cron` executa limpeza a cada 5 minutos.
-- Dados de conta/apostas: persistência sem expurgo automático.
+- `ext_football_odds`: TTL de 1 hora via `expires_at`, limpo por `pg_cron` (job `ext_football_odds_expiry_every_5_minutes`).
+- `ext_users` e `ext_user_bets`: persistência sem expurgo automático.
+- RLS ativo em todas; gravação somente via backend com `SUPABASE_SECRET_KEY`.
 
 ## Endpoint de versão da extensão
 

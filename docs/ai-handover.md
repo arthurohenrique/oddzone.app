@@ -2,6 +2,139 @@
 
 Este documento registra estado atual, decisões e próximos passos para continuidade sem perda de contexto.
 
+## Atualização recente (2026-05-21) — reset v2: foco em futebol + 3 tabelas
+
+### Contexto
+
+Auditoria mostrou que **nenhuma tabela do coletor existia no banco de produção** (`bethedge-prod`, projeto Supabase `uvjleaeipxqnqbvtlarp`). As migrations antigas (`20260515153000_init_extension_events.sql` e `20260515181000_collector_data_model.sql`) nunca foram aplicadas no remoto — toda tentativa de ingestão da extensão falhava silenciosamente porque as tabelas-alvo (`collector_installations`, `account_profiles`, `bets`, `odds_snapshots`, etc.) não existiam.
+
+O usuário pediu, simultaneamente:
+
+1. Estruturar o que é coletado das casas de apostas.
+2. Focar em **odds de futebol** e **dados da conta do usuário** (nome, email, saldo, apostas realizadas).
+3. Reformular o banco com boas práticas, poucas tabelas, objetivo.
+
+### Decisões tomadas nesta rodada (confirmadas com o usuário via AskUserQuestion)
+
+1. **Modelo enxuto de 3 tabelas** (não manter o modelo antigo de 8 tabelas, não usar single-table-jsonb).
+2. **Filtro híbrido de futebol com score de confiança** (não apenas URL/breadcrumb nem só assinatura de mercado).
+3. **Migration destrutiva autorizada** — como nada do coletor existia, foi feito `drop ... cascade` no modelo antigo e criação do novo do zero.
+
+### Arquivos alterados nesta rodada
+
+#### 1) `supabase/migrations/20260521210000_collector_reset_v2.sql` (novo) — APLICADA NO REMOTO
+
+- Dropa em cascade: `collector_installations`, `consent_terms`, `user_consents`, `site_sessions`, `account_profiles`, `bets`, `odds_snapshots`, `collector_failures`, `extension_events`.
+- Cria 3 tabelas novas com prefixo `ext_` (isolamento claro do sistema bethedge-prod que compartilha o schema `public`):
+  - **`ext_users`** (`install_id` pk) — instalação + perfil capturado: `bookmaker`, `email`, `display_name`, `balance_cents`, `currency`, `extension_version`, `consent_accepted_at`, `consent_term_version`, `first_seen_at`, `last_seen_at`, `updated_at`. Índices: `bookmaker`, `email` (parcial).
+  - **`ext_football_odds`** — `install_id` (fk), `bookmaker`, `league`, `event_name`, `home_team`, `away_team`, `market`, `selection`, `odd_value`, `confidence_score`, `page_url`, `captured_at`, `expires_at (now + 1h)`. Índices: `(install_id, captured_at desc)`, `(bookmaker, event_name, market)`, `expires_at`.
+  - **`ext_user_bets`** — `install_id` (fk), `bookmaker`, `betslip_id`, `league`, `event_name`, `market`, `selection`, `stake_cents`, `odd_value`, `potential_return_cents`, `status`, `placed_at`, `captured_at`. Índice único parcial `(install_id, bookmaker, betslip_id) where betslip_id is not null` (habilita upsert).
+- Recria função `private.cleanup_expired_football_odds()` + cron job `ext_football_odds_expiry_every_5_minutes`.
+- RLS habilitado em todas, sem grant para `anon`/`authenticated` — gravação apenas via backend com service role.
+
+#### 2) `apps/extension/lib/collector-types.ts` — REESCRITO
+
+Payload simplificado. Apenas dois `eventType`: `consent_accepted` e `snapshot`. Eliminados `extension_lifecycle`, `page_seen`, `collector_failure`, `lifecycleEventType`, `failureCode`, etc. Novos tipos:
+
+- `AccountProfilePayload`: `email`, `displayName`, `balanceCents`, `currency`.
+- `FootballOddPayload`: `league`, `eventName`, `homeTeam`, `awayTeam`, `market`, `selection`, `oddValue` (não-nulo), `confidenceScore`.
+- `UserBetPayload`: `betslipId`, `league`, `eventName`, `market`, `selection`, `stakeCents`, `oddValue`, `potentialReturnCents`, `status`, `placedAt`.
+- `SnapshotPayload`: `bookmaker`, `pageUrl`, `account`, `odds[]`, `bets[]`.
+- `CollectorIngestPayload`: `eventType`, `installationId`, `extensionVersion`, `bookmaker`, `pageUrl`, `capturedAt`, `consent`, `snapshot?`.
+
+Note: removidos todos os `rawPayload: Record<string, unknown>` para fugir do dump de DOM no banco. Cada campo é tipado.
+
+#### 3) `apps/extension/lib/provider-adapters.ts` — REESCRITO
+
+Único parser, sem provedores específicos por enquanto. Componentes:
+
+- **`detectFootballSignals(doc, location)`** — sinais de página: URL contém `futebol`/`soccer`/`football`; breadcrumb/menu lateral marcado; `document.title`.
+- **`buildEventContext(element)`** — encontra o card do evento (heurística `[class*="event-card"]`, `[class*="match-card"]`, `[class*="fixture"]`, etc.), extrai `eventName`, parseia `Time A vs Time B` (separadores `vs`/`x`/`v`/`-`), detecta `market` via `[data-market]`/`[class*="market-name"]`, detecta liga contra `KNOWN_LEAGUES`, detecta padrão 1X2 procurando rótulos `1`/`x`/`empate`/`draw`/`2`/`fora`/`away` no mesmo card.
+- **`buildConfidenceScore(context, pageSignals)`** — soma: `+1` URL, `+1` breadcrumb, `+1` título, `+2` mercado exclusivo (BTTS/escanteios/cartões/handicap asiático/dupla chance/total de gols), `+2` 1X2 detectado, `+1` liga reconhecida, `+1` `homeTeam && awayTeam`. **Limiar de entrada: `>= 2`.**
+- **`collectFootballOdds`** — varre até 400 elementos via lista de `ODD_ELEMENT_SELECTORS`, extrai odd numérica (faixa 1.01–1000), aplica score, dedupe por `(value, selection, market, eventName)`.
+- **`collectAccount`** — `display_name` (várias heurísticas), `email` via regex no DOM (primeiro em elementos suspeitos, fallback em `body.textContent`), saldo com parser de moeda multi-currency (BRL/USD/EUR).
+- **`collectUserBets`** — varre linhas em `[data-testid*="bet-history"]`/`[class*="my-bets"]`/etc., extrai stake, odd, retorno potencial, status.
+- **`detectBookmaker(hostname)`** — pega o terceiro segmento de domínio (ex.: `betano.bet.br` → `betano`).
+
+Listas extensíveis sem mudar schema:
+- `KNOWN_LEAGUES` (Brasileirão, Libertadores, Premier League, Champions, La Liga, Bundesliga, Serie A/B/C/D, Sul-Americana, Copa do Brasil, Mundial, Eredivisie, MLS, J-League, etc.)
+- `FOOTBALL_MARKET_KEYWORDS` (ambos marcam/BTTS, escanteios/corners, cartões/cards, handicap asiático, 1X2, dupla chance, total de gols, primeiro/segundo tempo, HT/FT, marcador correto, draw no bet, empate anula).
+
+#### 4) `apps/extension/entrypoints/background.ts` — REESCRITO
+
+Removidos handlers de `extension_lifecycle`, `page_seen` e `collector_failure`. Restam:
+
+- `collector:get-consent` — retorna estado de aceite.
+- `collector:accept-consent` — persiste aceite + envia `consent_accepted`.
+- `collector:snapshot` — envia o payload completo (conta + odds + bets) em uma única chamada.
+
+#### 5) `apps/extension/entrypoints/content.ts` — REESCRITO
+
+Removida lógica de `page_seen` / `report_failure`. Comportamento:
+
+- Detecta `.bet.br`, exibe prompt de consentimento se necessário.
+- `MutationObserver` + monitor de URL (1.5s) para SPAs.
+- Debounce de 1.5s no envio; cooldown de 1.5s entre snapshots; deduplicação por assinatura.
+- Snapshot só vai pro background se tiver pelo menos `account`, alguma odd ou alguma bet (corta ruído).
+- Bridge de versão para `oddzone.app` preservado.
+
+#### 6) `apps/web/app/api/collector/ingest/route.ts` — REESCRITO
+
+- Aceita só `consent_accepted` e `snapshot`. Validações estritas: `installationId`, `extensionVersion`, `bookmaker`, `capturedAt`, `consent.accepted` obrigatórios.
+- **`upsertUser`** (sempre) — atualiza `ext_users` com último visto; preenche email/nome/saldo só se vierem no payload (não sobrescreve com `null`).
+- **`insertOdds`** (em snapshot) — filtra `oddValue >= 1.01`, insere em lote em `ext_football_odds`.
+- **`upsertBets`** (em snapshot) — separa em dois grupos: com `betslipId` (upsert no conflito de `(install_id, bookmaker, betslip_id)`) e sem (insert simples).
+- Retorna `{ ok, requestId, oddsInserted, betsInserted }` para debugging fácil.
+- Mantém check de token (`X-Collector-Token`) e origem (`X-Collector-Source: oddzone-extension`).
+
+#### 7) `README.md`
+
+- Substituída seção de troubleshooting/diagnóstico antiga (que referenciava tabelas inexistentes) por uma nova focada nas 3 tabelas atuais.
+- Adicionada seção "Modelo de dados (v2 — foco em futebol)" e "Filtro híbrido de futebol".
+- Atualizada seção "Banco de dados e retenção" para apontar a migration v2.
+
+#### 8) `docs/collector-architecture.md` — REESCRITO
+
+Documento agora descreve o pipeline v2 ponta-a-ponta: 3 tabelas com colunas, filtro híbrido com a fórmula do score, componentes por arquivo, segurança, release e estratégia de evolução.
+
+### Validações executadas
+
+- Migration aplicada no remoto via MCP Supabase: `apply_migration` retornou `{success:true}`.
+- Conferência de schema: `ext_users` (12 cols), `ext_football_odds` (14 cols), `ext_user_bets` (14 cols).
+- Teste manual de pipeline: insert de 1 user + 2 odds + 1 bet com FK funcionando; cleanup via cascade ok.
+- `npm run build:extension` (ok, 23kB total).
+- `npm run build:web` (ok, rotas estáticas e dinâmicas renderizando).
+- `tsc --noEmit` no `apps/web` sem erros.
+- `tsc --noEmit` no `apps/extension` reporta apenas erros pré-existentes do WXT (auto-imports `defineBackground`/`defineContentScript` — esperado, só funcionam no build do WXT).
+- Supabase advisors: as 3 tabelas novas aparecem como `rls_enabled_no_policy` nível INFO. **Comportamento desejado** — gravação só via service role, que bypassa RLS.
+
+### Limitações remanescentes (não tocadas nesta rodada)
+
+- Token compartilhado segue como controle de atrito.
+- Nenhum parser específico por casa (`betano.ts`, `bet365.ts`, etc.) — só o adaptador genérico com filtro híbrido.
+- Sem testes automatizados; cobertura real só conhecida com extensão rodando em ambiente real.
+- `placed_at` de bets sempre `null` no momento — parser do histórico ainda não extrai data.
+- Score mínimo `>= 2` é heurístico; pode precisar de calibração depois de ver dados reais.
+
+### Como validar em ambiente real
+
+1. `npm run release:extension` (gera novo zip em `apps/web/public/downloads`).
+2. Recarregar extensão no Chrome via `chrome://extensions` (Carregar sem compactação ou Atualizar).
+3. Visitar uma casa `.bet.br` com odds visíveis (ex.: `betano.bet.br/futebol/...`).
+4. Aceitar o termo.
+5. Conferir `POST /api/collector/ingest` 200 no DevTools do service worker.
+6. No Supabase: `select count(*) from ext_football_odds where captured_at > now() - interval '5 min';` deve retornar > 0.
+7. `select email, display_name, balance_cents from ext_users order by last_seen_at desc limit 5;` para conferir captura de conta.
+
+### Prioridade recomendada para próxima rodada
+
+1. **Validar em produção real**: rodar extensão em 3+ casas `.bet.br`, observar `confidence_score` médio e ajustar limiar/sinais se necessário.
+2. **Estender `KNOWN_LEAGUES` e `FOOTBALL_MARKET_KEYWORDS`** com base no que aparece nos dados.
+3. **Extrair `placed_at` real** das linhas de aposta (parser de data/hora).
+4. **Parser dedicado por casa** quando o filtro genérico não cobrir alguma (`apps/extension/lib/providers/<casa>.ts`).
+5. **Rate limit por `install_id`** no endpoint de ingestão.
+6. **Painel interno simples** para inspecionar odds e bets recentes (consulta direta às 3 tabelas).
+
 ## Atualização recente (2026-05-15) - correção de ingestão e reforço de coleta
 
 ### Contexto do incidente
@@ -334,107 +467,94 @@ Impacto: operação e suporte têm guia completo sem depender de conhecimento im
 2. Correlacionar no backend pelo `requestId`.
 3. Validar inserts esperados no Supabase conforme `eventType`.
 
-## Estado atual (implementado)
+## Estado atual (após reset v2 de 2026-05-21)
 
 ### 1) Coleta com consentimento
 
 - Coleta só inicia em domínios `.bet.br`.
 - Sem consentimento, a extensão mostra prompt e bloqueia captura.
-- Ao aceitar:
-  - persiste `acceptedAt`, `termVersion`, `termHash`
-  - gera/persiste `installation_id`
-  - envia evento `consent_accepted`.
+- Ao aceitar, persiste `acceptedAt`, `termVersion`, `termHash`, gera/persiste `installation_id` e envia evento `consent_accepted`.
 
-Arquivos:
+Arquivos: `apps/extension/entrypoints/content.ts`, `apps/extension/lib/collector-consent.ts`, `apps/extension/lib/collector-config.ts`.
 
-- `apps/extension/entrypoints/content.ts`
-- `apps/extension/lib/collector-consent.ts`
-- `apps/extension/lib/collector-config.ts`
+### 2) Pipeline de ingestão (v2)
 
-### 2) Pipeline de ingestão
+- Content script monta um único `SnapshotPayload` (account + odds + bets) via `collectSnapshotFromPage`.
+- Background envia `POST /api/collector/ingest` com `eventType: "snapshot"`.
+- API valida cabeçalhos e payload, **upserta `ext_users`** + **insere `ext_football_odds`** + **upserta `ext_user_bets`** usando `SUPABASE_SECRET_KEY`.
 
-- Content script envia mensagens para background.
-- Background normaliza para `CollectorIngestPayload`.
-- Background envia para `POST /api/collector/ingest`.
-- API valida cabeçalhos e persiste no Supabase usando `SUPABASE_SECRET_KEY`.
+Arquivos: `apps/extension/entrypoints/background.ts`, `apps/extension/lib/collector-api.ts`, `apps/extension/lib/collector-types.ts`, `apps/extension/lib/provider-adapters.ts`, `apps/web/app/api/collector/ingest/route.ts`.
 
-Arquivos:
+### 3) Modelo de banco (v2)
 
-- `apps/extension/entrypoints/background.ts`
-- `apps/extension/lib/collector-api.ts`
-- `apps/extension/lib/collector-types.ts`
-- `apps/web/app/api/collector/ingest/route.ts`
+Apenas **3 tabelas** com prefixo `ext_`:
 
-### 3) Modelo de banco
+- `ext_users` — perfil capturado da casa por instalação (email, nome, saldo, moeda) + consentimento.
+- `ext_football_odds` — odds de futebol com `confidence_score`. TTL 1h via `expires_at` + cron `*/5 * * * *`.
+- `ext_user_bets` — apostas realizadas. Upsert por `(install_id, bookmaker, betslip_id)` quando há id.
 
-Tabelas adicionadas/planejadas por migração:
+Arquivo: `supabase/migrations/20260521210000_collector_reset_v2.sql` (aplicada no remoto em 2026-05-21).
 
-- `collector_installations`
-- `consent_terms`
-- `user_consents`
-- `site_sessions`
-- `account_profiles`
-- `bets`
-- `odds_snapshots`
-- `collector_failures`
+Tabelas do modelo v1 (`collector_installations`, `consent_terms`, `user_consents`, `site_sessions`, `account_profiles`, `bets`, `odds_snapshots`, `collector_failures`, `extension_events`) foram **dropadas em cascade** e não devem ser referenciadas.
 
-Retenção:
+### 4) Filtro de futebol
 
-- `odds_snapshots` com `expires_at` e limpeza automática.
+Cada odd ganha `confidence_score` em `buildConfidenceScore`. Só persiste se `score >= 2`. Sinais somáveis: URL (+1), breadcrumb (+1), título (+1), mercado exclusivo (+2), 1X2 detectado (+2), liga reconhecida (+1), `home vs away` (+1).
 
-Arquivo:
-
-- `supabase/migrations/20260515181000_collector_data_model.sql`
+Listas extensíveis em `apps/extension/lib/provider-adapters.ts`: `KNOWN_LEAGUES`, `FOOTBALL_MARKET_KEYWORDS`, `FOOTBALL_URL_KEYWORDS`, `FOOTBALL_BREADCRUMB_KEYWORDS`.
 
 ## Decisões arquiteturais importantes
 
-1. **Coleta orientada a eventos**, não por scraping bruto contínuo.
-2. **Persistência sensível só no backend**, nunca direto com chave pública.
-3. **RLS habilitado por padrão** em todas as tabelas novas.
-4. **TTL explícito para dados voláteis** (odds).
-5. **Termo versionado** para rastreabilidade de aceite.
+1. **3 tabelas, sem rawPayload** — schema relacional puro; o que não couber em coluna tipada não vai pro banco.
+2. **Coleta orientada a snapshot único** — um POST por captura agrega conta + odds + bets; evita N requests por evento.
+3. **Persistência sensível só no backend**, nunca direto com chave pública.
+4. **RLS habilitado, sem policy** — gravação apenas via service role; queries de leitura precisam usar service role no backend.
+5. **TTL de 1h em odds** (`pg_cron`), persistência indefinida em users/bets.
+6. **Termo versionado** para rastreabilidade de aceite.
+7. **Prefixo `ext_`** isola as tabelas da extensão do schema compartilhado com `bethedge-prod`.
 
 ## Riscos conhecidos
 
 1. **Token compartilhado da extensão** é fraco contra engenharia reversa.
-2. Parsers atuais são heurísticos e podem quebrar por mudança de DOM.
+2. **Filtro híbrido é heurístico** — limiar `>= 2` precisa calibração após observar dados reais.
 3. Falta rate limiting explícito no endpoint de ingestão.
 4. Falta observabilidade centralizada (dashboard/alertas).
+5. **Sem parsers por provedor** — uma casa com DOM atípico pode produzir baixo `confidence_score`.
 
 ## Próximas tarefas recomendadas (ordem sugerida)
 
-1. Implementar autenticação forte por instalação (chave assimétrica por dispositivo).
-2. Adicionar rate limit e deduplicação no endpoint de ingestão.
-3. Criar adaptadores específicos por provedor `.bet.br`.
-4. Adicionar testes automatizados:
-   - fixtures de HTML para parsers
-   - testes de contrato do endpoint
-   - teste SQL de expurgo de odds
-5. Criar painel interno para inspeção de `collector_failures`.
+1. **Validar em produção real** com 3+ casas; ajustar listas de palavras-chave e limiar.
+2. Extrair `placed_at` real das linhas de bet history.
+3. Implementar parsers por provedor (`apps/extension/lib/providers/<casa>.ts`) somando sinais ao score.
+4. Rate limit por `install_id` no endpoint de ingestão.
+5. Painel interno simples para inspecionar `ext_football_odds`, `ext_user_bets`, `ext_users` recentes.
+6. Autenticação forte por instalação (chave assimétrica por dispositivo).
+7. Testes automatizados com fixtures de HTML por provedor.
 
 ## Contrato mínimo para continuidade
 
-Ao adicionar novos tipos de dados:
+Ao adicionar novos campos ou tipos:
 
-1. Atualizar `CollectorIngestPayload` em `apps/extension/lib/collector-types.ts`.
-2. Atualizar validação no `POST /api/collector/ingest`.
-3. Criar migração SQL correspondente.
-4. Documentar no `docs/collector-architecture.md`.
-5. Garantir regra de retenção (TTL ou política de persistência).
+1. Atualizar `SnapshotPayload`/`CollectorIngestPayload` em `apps/extension/lib/collector-types.ts`.
+2. Atualizar parser correspondente em `apps/extension/lib/provider-adapters.ts`.
+3. Atualizar validação + insert no `POST /api/collector/ingest`.
+4. Criar migração SQL adicionando coluna/tabela (não dropar `ext_*` sem alinhamento).
+5. Documentar no `docs/collector-architecture.md` e atualizar `Estado atual` neste handover.
 
 ## Checklists operacionais
 
 ### Antes de deploy
 
-- [ ] `npm run build:web`
-- [ ] `npm run build:extension`
-- [ ] `npm run release:extension`
-- [ ] aplicar migrações no Supabase
-- [ ] validar endpoint `/api/collector/ingest`
+- [ ] `npm run build:extension` passa
+- [ ] `npm run build:web` passa
+- [ ] `npm run release:extension` gera zip atualizado em `apps/web/public/downloads`
+- [ ] migrations novas aplicadas no Supabase (`mcp__claude_ai_Supabase__apply_migration` ou CLI)
+- [ ] endpoint `/api/collector/ingest` responde 400 sem payload (saúde)
 
 ### Após deploy
 
-- [ ] validar criação de registros em `site_sessions`
-- [ ] validar criação de registros em `odds_snapshots`
-- [ ] validar job de purge removendo odds expiradas
-- [ ] monitorar erros em `collector_failures`
+- [ ] `select count(*) from ext_users where last_seen_at > now() - interval '1 hour'` > 0
+- [ ] `select count(*) from ext_football_odds where captured_at > now() - interval '5 min'` > 0
+- [ ] `select count(*) from ext_user_bets where captured_at > now() - interval '1 hour'` > 0 (se houver usuário com apostas abertas)
+- [ ] `select count(*) from ext_football_odds where expires_at < now()` deve manter próximo de 0 (job de purge ativo)
+- [ ] `select avg(confidence_score) from ext_football_odds where captured_at > now() - interval '1 hour'` para acompanhar qualidade do filtro

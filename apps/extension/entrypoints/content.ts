@@ -1,6 +1,6 @@
 import { TERMS_TEXT, isBetBrDomain } from "../lib/collector-config";
 import { collectSnapshotFromPage } from "../lib/provider-adapters";
-import type { ConsentState } from "../lib/collector-types";
+import type { ConsentState, SnapshotPayload } from "../lib/collector-types";
 
 const VERSION_REQUEST_TYPE = "oddzone:extension-version:request";
 const VERSION_RESPONSE_TYPE = "oddzone:extension-version:response";
@@ -109,59 +109,42 @@ export default defineContentScript({
     let isSnapshotInFlight = false;
     let lastSnapshotSignature: string | null = null;
     let lastSnapshotAt = 0;
-    let lastFailureAt = 0;
     let mutationDebounce: number | null = null;
     let locationTimer: number | null = null;
 
-    const failureCooldownMs = 12_000;
-    const snapshotCooldownMs = 1_200;
+    const snapshotCooldownMs = 1_500;
 
-    const buildSnapshotSignature = (snapshot: ReturnType<typeof collectSnapshotFromPage>): string => {
+    const buildSnapshotSignature = (snapshot: SnapshotPayload): string => {
       return JSON.stringify({
         pageUrl: snapshot.pageUrl,
-        providerSlug: snapshot.providerSlug,
-        odds: snapshot.odds
-          .slice(0, 40)
-          .map((odd) => [odd.selection, odd.oddValue, odd.market, odd.eventName]),
-        bets: snapshot.bets.length,
-        profile: snapshot.accountProfile?.username ?? null
+        bookmaker: snapshot.bookmaker,
+        oddsCount: snapshot.odds.length,
+        topOdds: snapshot.odds
+          .slice(0, 30)
+          .map((odd) => [odd.eventName, odd.market, odd.selection, odd.oddValue]),
+        betsCount: snapshot.bets.length,
+        account: snapshot.account?.email ?? snapshot.account?.displayName ?? null,
+        balance: snapshot.account?.balanceCents ?? null
       });
     };
 
-    const reportFailure = async (code: string, message: string): Promise<void> => {
-      const now = Date.now();
-      if (now - lastFailureAt < failureCooldownMs) return;
-      lastFailureAt = now;
-
-      try {
-        await sendToBackground({
-          type: "collector:failure",
-          sourceUrl: currentUrl,
-          siteDomain: hostname,
-          code,
-          message
-        });
-      } catch (error) {
-        console.error("[oddzone] Falha ao reportar erro para background", error);
-      }
-    };
-
-    const sendPageSeen = async (): Promise<void> => {
-      await sendAndAssert({
-        type: "collector:page-seen",
-        sourceUrl: currentUrl,
-        siteDomain: hostname,
-        pageTitle: document.title
-      });
-    };
-
-    const sendSnapshot = async (reason: string, force = false): Promise<void> => {
+    const sendSnapshot = async (force = false): Promise<void> => {
       if (isSnapshotInFlight) return;
 
       const now = Date.now();
       if (!force && now - lastSnapshotAt < snapshotCooldownMs) return;
 
       const snapshot = collectSnapshotFromPage(document, window.location);
+
+      if (
+        !force &&
+        snapshot.odds.length === 0 &&
+        snapshot.bets.length === 0 &&
+        snapshot.account === null
+      ) {
+        return;
+      }
+
       const signature = buildSnapshotSignature(snapshot);
       if (!force && signature === lastSnapshotSignature) return;
 
@@ -169,15 +152,9 @@ export default defineContentScript({
       try {
         await sendAndAssert({
           type: "collector:snapshot",
-          sourceUrl: currentUrl,
-          siteDomain: hostname,
-          snapshot: {
-            ...snapshot,
-            rawPayload: {
-              ...snapshot.rawPayload,
-              captureReason: reason
-            }
-          }
+          pageUrl: currentUrl,
+          bookmaker: snapshot.bookmaker,
+          snapshot
         });
         lastSnapshotSignature = signature;
         lastSnapshotAt = now;
@@ -186,19 +163,18 @@ export default defineContentScript({
       }
     };
 
-    const scheduleSnapshot = (reason: string) => {
+    const scheduleSnapshot = () => {
       if (mutationDebounce !== null) {
         window.clearTimeout(mutationDebounce);
       }
 
       mutationDebounce = window.setTimeout(() => {
         mutationDebounce = null;
-        void sendSnapshot(reason).catch((error: unknown) => {
+        void sendSnapshot().catch((error: unknown) => {
           const detail = error instanceof Error ? error.message : "Falha desconhecida";
           console.error("[oddzone] Falha ao enviar snapshot", detail);
-          void reportFailure("SNAPSHOT_SEND_FAILURE", detail);
         });
-      }, 1200);
+      }, 1500);
     };
 
     const startLiveCollector = () => {
@@ -206,7 +182,7 @@ export default defineContentScript({
       isCollectorStarted = true;
 
       const observer = new MutationObserver(() => {
-        scheduleSnapshot("dom_mutation");
+        scheduleSnapshot();
       });
 
       observer.observe(document.documentElement, {
@@ -221,13 +197,10 @@ export default defineContentScript({
 
         currentUrl = href;
         lastSnapshotSignature = null;
-        void sendPageSeen()
-          .then(() => sendSnapshot("url_change", true))
-          .catch((error: unknown) => {
-            const detail = error instanceof Error ? error.message : "Falha ao processar mudanca de URL";
-            console.error("[oddzone] Falha em evento de mudanca de URL", detail);
-            void reportFailure("URL_CHANGE_FAILURE", detail);
-          });
+        void sendSnapshot(true).catch((error: unknown) => {
+          const detail = error instanceof Error ? error.message : "Falha";
+          console.error("[oddzone] Falha em mudanca de URL", detail);
+        });
       }, 1500);
 
       window.addEventListener("beforeunload", () => {
@@ -254,8 +227,8 @@ export default defineContentScript({
 
             await sendAndAssert({
               type: "collector:accept-consent",
-              sourceUrl: currentUrl,
-              siteDomain: hostname
+              pageUrl: currentUrl,
+              bookmaker: hostname
             });
 
             removeConsentCard();
@@ -265,13 +238,11 @@ export default defineContentScript({
         }
 
         removeConsentCard();
-        await sendPageSeen();
-        await sendSnapshot("initial_load", true);
+        await sendSnapshot(true);
         startLiveCollector();
       } catch (error) {
         const detail = error instanceof Error ? error.message : "Falha na coleta";
         console.error("[oddzone] Falha no content script", detail);
-        await reportFailure("CONTENT_SCRIPT_FAILURE", detail);
       }
     };
 

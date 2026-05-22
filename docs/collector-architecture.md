@@ -1,146 +1,135 @@
-# Arquitetura do coletor `.bet.br`
+# Arquitetura do coletor `.bet.br` (v2)
 
 ## Visão geral
 
-O coletor foi desenhado em camadas para separar captura, transporte e persistência:
+Pipeline focado em três coisas: **odds de futebol**, **conta do usuário** (email, nome, saldo) e **apostas realizadas**.
 
-1. **Content script (WXT)** detecta domínio `.bet.br`.
-2. **Gate de consentimento** bloqueia coleta até aceite.
-3. **Adaptadores** extraem snapshot inicial (conta, bets, odds).
-4. **Content script** continua observando mudanças de DOM/URL para coletar snapshots adicionais em páginas SPA.
-5. **Background** empacota evento e envia para API de ingestão.
-6. **API Next.js** valida payload e persiste no Supabase com chave de servidor.
-7. **Postgres + pg_cron** aplica retenção de odds (`TTL = 1h`).
+1. **Content script (WXT)** detecta domínio `.bet.br` e exibe prompt de consentimento.
+2. **Adaptador único** percorre o DOM, classifica cada odd via score híbrido de futebol, lê dados de conta e histórico de apostas.
+3. **Background** empacota um único evento `snapshot` e envia para a API.
+4. **API Next.js** valida token, upserta `ext_users` e insere `ext_football_odds` + `ext_user_bets` em lote.
+5. **Postgres + pg_cron** aplica TTL de 1h em `ext_football_odds`.
+
+Apenas dois tipos de evento existem: `consent_accepted` e `snapshot`.
+
+## Modelo de dados
+
+Três tabelas (`supabase/migrations/20260521210000_collector_reset_v2.sql`):
+
+### `ext_users`
+Perfil do usuário capturado por instalação. Upsertado em todo snapshot.
+
+| Coluna | Tipo | Descrição |
+| ------ | ---- | --------- |
+| `install_id` | `text` (pk) | UUID gerado pela extensão |
+| `bookmaker` | `text` | slug do domínio (ex.: `betano`) |
+| `email` | `text` | extraído do DOM (regex de email) |
+| `display_name` | `text` | nome/username exibido |
+| `balance_cents` | `bigint` | saldo em centavos |
+| `currency` | `text` | `BRL`, `USD`, `EUR` |
+| `extension_version` | `text` | versão do manifesto |
+| `consent_accepted_at` | `timestamptz` | momento do aceite |
+| `consent_term_version` | `text` | versão do termo |
+| `first_seen_at` / `last_seen_at` / `updated_at` | `timestamptz` | janela de atividade |
+
+### `ext_football_odds`
+Toda odd classificada como futebol. TTL de 1h.
+
+| Coluna | Tipo | Descrição |
+| ------ | ---- | --------- |
+| `install_id` | `text` (fk) | usuário |
+| `bookmaker` | `text` | casa |
+| `league` | `text` | liga reconhecida (best effort) |
+| `event_name` | `text` | nome do evento |
+| `home_team` / `away_team` | `text` | times (parse `vs`/`x`/`-`) |
+| `market` | `text` | mercado contextual |
+| `selection` | `text` | rótulo da seleção |
+| `odd_value` | `numeric(10,4)` | valor numérico |
+| `confidence_score` | `smallint` | 0–9, ver filtro híbrido |
+| `page_url` | `text` | URL onde foi vista |
+| `captured_at` | `timestamptz` | quando |
+| `expires_at` | `timestamptz` | now + 1h |
+
+### `ext_user_bets`
+Apostas realizadas pelo usuário lidas do histórico/apostas abertas.
+
+| Coluna | Tipo | Descrição |
+| ------ | ---- | --------- |
+| `install_id` | `text` (fk) | usuário |
+| `bookmaker` | `text` | casa |
+| `betslip_id` | `text` | id da casa (quando exposto) |
+| `league` / `event_name` / `market` / `selection` | `text` | contexto |
+| `stake_cents` / `potential_return_cents` | `bigint` | valores em centavos |
+| `odd_value` | `numeric(10,4)` | odd da aposta |
+| `status` | `text` | open, won, lost, void |
+| `placed_at` | `timestamptz` | quando colocada |
+| `captured_at` | `timestamptz` | quando capturada |
+
+Índice único `(install_id, bookmaker, betslip_id)` quando `betslip_id` não é nulo — apostas com id são upsertadas, sem id são apenas inseridas.
+
+## Filtro híbrido de futebol
+
+Cada odd só entra no banco se `confidence_score >= 2`. Sinais somados:
+
+- `+1` URL contém `futebol`/`soccer`/`football`
+- `+1` breadcrumb/menu lateral marcado com `Futebol`
+- `+1` `document.title` contém palavra-chave de futebol
+- `+2` mercado contém termo exclusivo de futebol (BTTS, escanteios, cartões, handicap asiático, dupla chance, total de gols, etc.)
+- `+2` card do evento expõe 3 opções 1/X/2 (assinatura clássica)
+- `+1` liga reconhecida na lista (`KNOWN_LEAGUES` em `provider-adapters.ts`)
+- `+1` nome do evento parseável como `Time A vs Time B`
+
+A lista de palavras-chave e ligas fica em `apps/extension/lib/provider-adapters.ts` e pode ser estendida sem mudar schema.
 
 ## Componentes por arquivo
 
 ### Extensão
 
-- `apps/extension/entrypoints/content.ts`
-  - valida domínio `.bet.br`
-  - exibe prompt de consentimento
-  - envia `page_seen` e `snapshot`
-  - observa mutações de DOM e mudanças de URL para nova coleta
-- `apps/extension/entrypoints/background.ts`
-  - recebe mensagens
-  - normaliza payload
-  - envia para `/api/collector/ingest`
-- `apps/extension/lib/collector-config.ts`
-  - constantes de domínio, termo e endpoint
-- `apps/extension/lib/collector-consent.ts`
-  - persistência do aceite e `installation_id`
-- `apps/extension/lib/provider-adapters.ts`
-  - parser heurístico com fallback genérico e seletores por provedor
-- `apps/extension/lib/collector-api.ts`
-  - cliente HTTP de ingestão
-- `apps/extension/lib/collector-types.ts`
-  - contrato de payload
+- `apps/extension/entrypoints/content.ts` — detecta `.bet.br`, prompt de consentimento, observa DOM e URL, dispara snapshots com cooldown de 1.5s.
+- `apps/extension/entrypoints/background.ts` — recebe mensagens (`get-consent`, `accept-consent`, `snapshot`) e posta na API.
+- `apps/extension/lib/provider-adapters.ts` — único parser. Captura conta, odds (com filtro híbrido) e apostas.
+- `apps/extension/lib/collector-types.ts` — contrato de payload alinhado ao schema.
+- `apps/extension/lib/collector-api.ts` — cliente HTTP com precheck e logs.
+- `apps/extension/lib/collector-consent.ts` — `chrome.storage.local` para `install_id` + aceite.
+- `apps/extension/lib/collector-config.ts` — domínio, termo, URL de ingestão.
 
 ### Web
 
-- `apps/web/app/api/collector/ingest/route.ts`
-  - valida token compartilhado e formato
-  - grava por tipo de evento
-- `apps/web/app/termos-extensao/page.tsx`
-  - termo público para referência
+- `apps/web/app/api/collector/ingest/route.ts` — valida token, upserta `ext_users`, insere lotes em `ext_football_odds` e upserta `ext_user_bets`.
+- `apps/web/app/termos-extensao/page.tsx` — termo público de referência.
 
 ### Banco
 
-- `supabase/migrations/20260515181000_collector_data_model.sql`
-  - modelo principal e job de limpeza
+- `supabase/migrations/20260521210000_collector_reset_v2.sql` — modelo único atual.
 
-## Modelo de eventos de ingestão
+## Segurança
 
-Tipos aceitos:
+1. Inserção feita pelo backend com `SUPABASE_SECRET_KEY` (service role).
+2. RLS ativo em todas as tabelas, sem grants para `anon`/`authenticated`.
+3. Endpoint de ingestão exige `X-Collector-Token` (compartilhado) e `X-Collector-Source: oddzone-extension`.
 
-- `extension_lifecycle`
-- `consent_accepted`
-- `page_seen`
-- `snapshot`
-- `collector_failure`
+Limitação conhecida: o token está embarcado no bundle da extensão e funciona como controle de atrito, não autenticação forte. Hardening futuro: assinatura por dispositivo + rate limit por `install_id`.
 
-Campos base:
+## Distribuição (público comum)
 
-- `installationId`
-- `extensionVersion`
-- `siteDomain`
-- `sourceUrl`
-- `capturedAt`
-- `consent` (accepted, version, hash)
+Inalterada da v1:
 
-## Estratégia de retenção
+1. Baixar `.zip` em `apps/web/public/downloads/oddzone-extension.zip`.
+2. Extrair localmente.
+3. `chrome://extensions` → modo desenvolvedor → `Carregar sem compactação`.
 
-- **Volátil**: `odds_snapshots.expires_at` (1h).
-- **Purge**: função `private.cleanup_expired_odds()` + cron `*/5 * * * *`.
-- **Persistente**: `account_profiles` e `bets` sem TTL automático.
+Sem auto-update nativo neste modo. Aviso sutil de versão no site usa `GET /api/extension/latest`.
 
-## Segurança atual e limitações
+## Release
 
-1. Inserção sensível feita por backend com `SUPABASE_SECRET_KEY`.
-2. Tabelas sensíveis têm RLS habilitado e sem grants para `anon/authenticated`.
-3. Endpoint de ingestão aceita header `X-Collector-Token`.
+```bash
+npm run release:extension
+```
 
-Limitação conhecida:
+Equivale a `build:extension` → `zip:extension` → `sync:extension-zip`.
 
-- o token da extensão é embarcado no build e deve ser tratado como controle de atrito, não como autenticação forte.
-- para hardening futuro: assinatura por dispositivo + rotação de credencial curta + rate limit por instalação.
+## Estratégia de evolução
 
-## Distribuição e atualização da extensão (público comum)
-
-### Modelo adotado
-
-Para público comum, o fluxo atual usa:
-
-1. download do arquivo `.zip`;
-2. extração local da pasta da extensão;
-3. instalação por `chrome://extensions` com `Carregar sem compactação`.
-
-Não há auto-update nativo nesse modo.
-
-### Componentes do fluxo
-
-- `apps/web/app/page.tsx`
-  - CTA principal de download do ZIP;
-  - guia visual de instalação por pasta descompactada.
-- `apps/web/app/api/extension/latest/route.ts`
-  - expõe `version` e `downloadUrl` (ZIP).
-- `scripts/sync-extension-zip.mjs`
-  - publica apenas `oddzone-extension.zip` em `apps/web/public/downloads`.
-- `apps/extension/wxt.config.ts`
-  - manifesto sem `update_url`/`key` de distribuição CRX.
-
-### Detecção de versão no site
-
-Para reduzir fricção de atualização manual:
-
-- `apps/extension/entrypoints/content.ts`
-  - expõe bridge via `window.postMessage` em `oddzone.app` para responder versão instalada (`chrome.runtime.getManifest().version`).
-- `apps/web/app/components/extension-version-notice.tsx`
-  - consulta versão instalada + `GET /api/extension/latest`;
-  - mostra aviso sutil de atualização quando necessário;
-  - mostra feedback sutil de “extensão detectada” quando versão está em dia.
-
-### Sequência de release
-
-1. `npm run build:extension`
-2. `npm run zip:extension`
-3. `npm run sync:extension-zip`
-
-Comando agregado:
-
-- `npm run release:extension`
-
-Checklist operacional mínimo:
-
-1. Confirmar que `POST /api/collector/ingest` retorna `200` no service worker.
-2. Confirmar URL/token alinhados entre web e extensão.
-3. Confirmar `snapshot.odds` preenchido no payload em páginas com odds visíveis.
-4. Confirmar inserts em `collector_installations`, `site_sessions` e `odds_snapshots`.
-
-## Estratégia de evolução dos adaptadores
-
-1. Criar parser por domínio (ex.: `providers/betano.ts`, `providers/sportingbet.ts`).
-2. Definir contrato comum (`SnapshotPayload`).
-3. Registrar versão do parser no `raw_payload`.
-4. Logar seletor falho em `collector_failures`.
-5. Adicionar testes de fixture HTML por provedor.
+1. Estender `KNOWN_LEAGUES` e `FOOTBALL_MARKET_KEYWORDS` em `provider-adapters.ts` conforme cobertura aumenta.
+2. Quando alguma casa tiver layout muito específico, criar adaptador dedicado por `bookmaker` e somar ao score.
+3. Para outros esportes, replicar o padrão: nova tabela `ext_<esporte>_odds` + função de score próprio.

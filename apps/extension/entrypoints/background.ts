@@ -1,7 +1,7 @@
 import { postCollectorPayload } from "../lib/collector-api";
 import { ingestUrl } from "../lib/collector-config";
 import { acceptCurrentTerms, getConsentState, getOrCreateInstallationId } from "../lib/collector-consent";
-import type { CollectorIngestPayload, ConsentState, ExtensionLifecycleType, SnapshotPayload } from "../lib/collector-types";
+import type { CollectorIngestPayload, ConsentState, SnapshotPayload } from "../lib/collector-types";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -13,61 +13,35 @@ function extensionVersion(): string {
 
 async function buildBasePayload(
   eventType: CollectorIngestPayload["eventType"],
-  siteDomain: string | null,
-  sourceUrl: string | null,
+  bookmaker: string,
+  pageUrl: string | null,
   consent: ConsentState
 ): Promise<CollectorIngestPayload> {
   return {
     eventType,
     installationId: await getOrCreateInstallationId(),
     extensionVersion: extensionVersion(),
-    siteDomain,
-    sourceUrl,
+    bookmaker,
+    pageUrl,
     capturedAt: nowIso(),
     consent
   };
 }
 
-async function sendLifecycle(event: ExtensionLifecycleType): Promise<void> {
-  const consent = await getConsentState();
-  const payload = await buildBasePayload(
-    "extension_lifecycle",
-    null,
-    null,
-    consent
-  );
-
-  payload.lifecycleEventType = event;
-  await postCollectorPayload(payload);
-}
-
 type ExtensionMessage =
   | { type: "collector:get-consent" }
-  | { type: "collector:accept-consent"; sourceUrl: string; siteDomain: string }
-  | { type: "collector:page-seen"; sourceUrl: string; siteDomain: string; pageTitle: string }
-  | { type: "collector:snapshot"; sourceUrl: string; siteDomain: string; snapshot: SnapshotPayload }
-  | { type: "collector:failure"; sourceUrl: string | null; siteDomain: string | null; code: string; message: string; rawPayload?: Record<string, unknown> };
+  | { type: "collector:accept-consent"; pageUrl: string; bookmaker: string }
+  | {
+      type: "collector:snapshot";
+      pageUrl: string;
+      bookmaker: string;
+      snapshot: SnapshotPayload;
+    };
 
 export default defineBackground(() => {
   console.info("[oddzone][background] iniciado", {
     extensionVersion: extensionVersion(),
     ingestUrl
-  });
-
-  chrome.runtime.onStartup.addListener(async () => {
-    try {
-      await sendLifecycle("startup");
-    } catch (error) {
-      console.error("[oddzone] Falha ao enviar lifecycle startup", error);
-    }
-  });
-
-  chrome.runtime.onInstalled.addListener(async () => {
-    try {
-      await sendLifecycle("install");
-    } catch (error) {
-      console.error("[oddzone] Falha ao enviar lifecycle install", error);
-    }
   });
 
   chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
@@ -82,28 +56,12 @@ export default defineBackground(() => {
         const consent = await acceptCurrentTerms();
         const payload = await buildBasePayload(
           "consent_accepted",
-          message.siteDomain,
-          message.sourceUrl,
+          message.bookmaker,
+          message.pageUrl,
           consent
         );
-        payload.termVersion = consent.termVersion;
-        payload.termHash = consent.termHash;
         await postCollectorPayload(payload);
         sendResponse({ ok: true, consent });
-        return;
-      }
-
-      if (message.type === "collector:page-seen") {
-        const consent = await getConsentState();
-        const payload = await buildBasePayload(
-          "page_seen",
-          message.siteDomain,
-          message.sourceUrl,
-          consent
-        );
-        payload.pageTitle = message.pageTitle;
-        await postCollectorPayload(payload);
-        sendResponse({ ok: true });
         return;
       }
 
@@ -111,27 +69,11 @@ export default defineBackground(() => {
         const consent = await getConsentState();
         const payload = await buildBasePayload(
           "snapshot",
-          message.siteDomain,
-          message.sourceUrl,
+          message.bookmaker,
+          message.pageUrl,
           consent
         );
         payload.snapshot = message.snapshot;
-        await postCollectorPayload(payload);
-        sendResponse({ ok: true });
-        return;
-      }
-
-      if (message.type === "collector:failure") {
-        const consent = await getConsentState();
-        const payload = await buildBasePayload(
-          "collector_failure",
-          message.siteDomain,
-          message.sourceUrl,
-          consent
-        );
-        payload.failureCode = message.code;
-        payload.failureMessage = message.message;
-        payload.failurePayload = message.rawPayload;
         await postCollectorPayload(payload);
         sendResponse({ ok: true });
       }
