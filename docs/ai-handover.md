@@ -2,6 +2,113 @@
 
 Este documento registra estado atual, decisões e próximos passos para continuidade sem perda de contexto.
 
+## Atualização recente (2026-05-21) — fix: extração completa do contexto de cada odd (event/market/teams/league)
+
+### Sintoma reportado
+
+> "no dashboard está apresentando quase todas como 'evento desconhecido'. As informações de qual odd está sendo apresentada não está clara"
+
+### Causa raiz
+
+Bug em `buildEventContext` no `provider-adapters.ts`: a função passava `card.ownerDocument` (documento inteiro) para `readPageText` em vez do próprio `card`. Resultado: `eventName` pegava o primeiro `<h1>`/`<h2>` da página (ex.: "Apostas Esportivas", "Resultados ao vivo") em vez do nome do evento. `extractTeamsFromText` falhava, home/away viravam `null`, e o dashboard caía no fallback "Evento desconhecido".
+
+Causa secundária: estratégia de extração de mercado/liga era muito frouxa. Quando o evento não era extraído, ainda assim a odd entrava no banco com `event_name=null` e `market=null`, sujando o feed.
+
+### Nova estratégia (em camadas)
+
+Reescrita completa do `apps/extension/lib/provider-adapters.ts` com extração em ordem decrescente de confiança:
+
+#### Para event_name + home_team + away_team
+
+1. **Atributos diretos no card**: `data-event-name`, `data-event`, `data-fixture-name`, `data-match-name` (cobre casas que expõem dados semânticos).
+2. **Estrutura: dois elementos de time vizinhos**: procura `[data-home-team]`/`[data-away-team]` (atributos), `[class*="team-name"]`, `[class*="participant-name"]`, `[class*="competitor"]`. Se encontrar ≥2 elementos do mesmo seletor dentro do card, primeiro = home, segundo = away.
+3. **Cabeçalho dentro do card** (escopo correto): `[class*="event-name"]`, `h1`–`h4` apenas se contém separador válido (`vs`, ` x `, ` v `, ` - `, ` — `, ` – `).
+4. **Aria-label rico do botão da odd**: muitas casas colocam tudo lá (ex.: `"Aposte em Flamengo. Odds 2.30. Resultado Final - Vencedor. Flamengo x Palmeiras."`). `parseAriaLabel` extrai home/away/market/selection juntos.
+
+#### Para market
+
+1. Atributos `data-market-name` / `data-market` no próprio elemento da odd.
+2. Container de mercado mais próximo (`[class*="market-group"]`, `[class*="market-container"]`) procurando label dentro.
+3. Label dentro do card.
+4. Sibling acima com classe `market-header`/`market-title` (sobe até 6 níveis).
+5. Match contra `FOOTBALL_MARKET_KEYWORDS` no `aria-label`.
+
+#### Para league
+
+1. Atributos `data-league-name` / `data-competition-name`.
+2. Sobe até 6 níveis procurando `[class*="league-name"]`, `[class*="competition-name"]`, `[class*="tournament-name"]`, `[class*="league-header"]`.
+3. Match contra `KNOWN_LEAGUES` no texto do card.
+
+#### Para selection
+
+1. `aria-label` (primeiro)
+2. `data-selection-name` / `data-selection`
+3. `title`
+4. `textContent` (se < 120 chars e não é só número)
+
+### Filtro estrito (alinhado com usuário)
+
+A odd só entra no banco se **tem `event_name` E `market`**. Se algum falta, descarta. Resultado: "Evento desconhecido" não aparece mais no dashboard. Banco fica menor e útil.
+
+Score híbrido mantido como camada extra (`>= 2`), agora aplicado **após** a extração de contexto:
+
+- `+1` URL contém `futebol`/`soccer`/`football`
+- `+1` breadcrumb tem palavra-chave de futebol
+- `+1` título da página tem palavra-chave de futebol
+- `+2` mercado bate palavra-chave exclusiva de futebol (BTTS, escanteios, etc.)
+- `+2` card tem 1X2 detectável
+- `+1` liga reconhecida
+- `+1` home/away ambos preenchidos
+
+### Telemetria por snapshot
+
+`collectSnapshotFromPage` agora loga no console:
+
+```
+[oddzone][capture] {
+  bookmaker: "betano",
+  rawCandidates: 287,
+  withOdd: 124,
+  accepted: 38,
+  droppedNoContext: 81,
+  droppedLowScore: 5
+}
+```
+
+- `rawCandidates`: elementos varridos.
+- `withOdd`: tinham valor numérico válido.
+- `accepted`: passaram filtro estrito + score.
+- `droppedNoContext`: descartadas por falta de event_name OU market.
+- `droppedLowScore`: tinham contexto mas score < 2.
+
+Permite calibrar listas (`FOOTBALL_MARKET_KEYWORDS`, `TEAM_SELECTORS`, etc.) a partir de dados reais sem precisar inspecionar DOM.
+
+### Detalhes técnicos
+
+- **`readWithin(scope, selectors)`** substitui o antigo `readPageText(doc, ...)` — agora respeita o escopo passado. Caça documental antiga não acontece mais.
+- **`readAttrWithin(scope, attrs)`** lê atributos do próprio scope OU de descendentes.
+- **`TEAM_SEPARATORS`** ampliado para incluir en-dash (` – `) e em-dash (` — `) que aparecem em casas internacionais.
+- **`extractTeamsFromText`** valida: home/away com ≥2 chars, <60 chars, nenhum dos lados é horário (`HH:MM`).
+- Tamanho do bundle do content script subiu de 15kB → 18.7kB. Custo aceitável dado o ganho de qualidade.
+
+### Versão e release
+
+- `wxt.config.ts` → `0.3.0` (bump major-ish da estratégia de extração).
+- Zip regerado em `apps/web/public/downloads/oddzone-extension.zip`.
+
+### Como validar
+
+1. Atualizar extensão para v0.3.0 (`chrome://extensions` → Remover → Carregar a pasta nova). Abas oddzone recarregam automaticamente.
+2. Visitar uma casa `.bet.br` com odds de futebol (ex.: `betano.bet.br/futebol/...`).
+3. **DevTools do site da casa** → console mostra `[oddzone][capture] {...}` a cada snapshot. Comparar `withOdd` vs `accepted` — se `droppedNoContext` for alto, significa que o DOM da casa usa estrutura não coberta pelos seletores. Adicionar à `TEAM_SELECTORS` / `MARKET_LABEL_SELECTORS` / etc.
+4. Recarregar `oddzone.vercel.app` → dashboard mostra odds com event_name preenchido. Zero "Evento desconhecido".
+
+### Próximas calibrações esperadas
+
+- Listas de seletores são heurísticas. Conforme aparecerem casas com DOM atípico, expandir `TEAM_SELECTORS`, `MARKET_LABEL_SELECTORS`, `LEAGUE_SELECTORS`, `EVENT_CARD_SELECTORS`.
+- Se `droppedNoContext` continuar alto numa casa específica, pode justificar parser dedicado (`apps/extension/lib/providers/<casa>.ts`).
+- Cota de bundle: <25kB ainda confortável. Se passar de 40kB, considerar lazy-load do parser.
+
 ## Atualização recente (2026-05-21) — dashboard puro: só as odds
 
 ### Pedido
